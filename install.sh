@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-VERSION=1.0.0
+VERSION=1.1.0
 COMMAND=install
 INSTALL_DIR=/opt/assppweb
 DOMAIN=
@@ -16,6 +16,11 @@ KEY_FILE=
 AUTH_HASH=
 ACCESS_PASSWORD=
 IMAGE=ghcr.io/lakr233/assppweb:latest
+SYNC_ENABLED=0
+ACCOUNT_PROXY_TOKEN=
+SYNC_IMAGE=assppweb-sync:1.1.0
+SYNC_BUNDLE_SHA256=140f2f9a1ddae136dccad218a1f0f32270fffeb2336e7b45fc8dd0b24c24fff0
+REPLACE_IMAGE=0
 CADDY_IMAGE=caddy:2-alpine
 PASSWORD_FILE=
 ASSUME_YES=0
@@ -37,7 +42,7 @@ usage() {
 AssppWeb Linux 一键部署管理器
 
 用法：bash install.sh [命令] [选项]
-命令：install、menu、config、passwd、info、update、rollback、start、stop、restart、status、logs、backup、uninstall
+命令：install、menu、config、passwd、info、update、rollback、start、stop、restart、status、logs、backup、enable-sync、uninstall
 已安装后输入 assppweb 即可进入中文管理菜单。
 
 选项：
@@ -49,6 +54,7 @@ AssppWeb Linux 一键部署管理器
   --username NAME          网页登录用户名，默认 admin
   --dir PATH               安装目录，默认 /opt/assppweb
   --image IMAGE            上游镜像，可指定 tag 或 sha256 digest
+  --sync                   新安装时启用服务端 Apple ID 账号同步（本机构建镜像）
   --password-file FILE     从文件读取密码；交互安装可输入密码或留空随机生成
   --cert FILE --key FILE   导入源站证书和私钥，搭配 Cloudflare Full (strict)
   --threads N              下载线程数 1–32，默认 8
@@ -61,6 +67,7 @@ AssppWeb Linux 一键部署管理器
 
 默认自动生成源站证书，Cloudflare SSL/TLS 须设为 Full；不要使用 Flexible。
 config 修改配置并重建容器；passwd 修改用户名/密码；info 显示回源说明。
+enable-sync 升级现有部署为服务端加密账号同步；保留域名、端口与网站密码。
 uninstall 删除本项目容器和网络，保留安装包、配置、证书及备份。
 HELP
 }
@@ -77,7 +84,7 @@ parse_args() {
           --port) PORT=$2 ;;
           --username) USERNAME=$2 ;;
           --dir) INSTALL_DIR=$2 ;;
-          --image) IMAGE=$2 ;;
+          --image) IMAGE=$2; SYNC_ENABLED=0 ;;
           --password-file) PASSWORD_FILE=$2 ;;
           --cert) CERT_FILE=$2 ;;
           --key) KEY_FILE=$2 ;;
@@ -89,6 +96,7 @@ parse_args() {
         shift 2 ;;
       --proxy) MODE=proxy; shift ;;
       --local) MODE=local; shift ;;
+      --sync) SYNC_ENABLED=1; IMAGE=$SYNC_IMAGE; shift ;;
       --yes) ASSUME_YES=1; shift ;;
       --help|-h) usage; exit 0 ;;
       --version) printf '%s\n' "$VERSION"; exit 0 ;;
@@ -96,7 +104,7 @@ parse_args() {
     esac
   done
   case "$COMMAND" in
-    install|menu|config|passwd|info|update|rollback|start|stop|restart|status|logs|backup|uninstall) ;;
+    install|menu|config|passwd|info|update|rollback|start|stop|restart|status|logs|backup|enable-sync|uninstall) ;;
     *) die "未知命令：$COMMAND" ;;
   esac
   [[ $INSTALL_DIR =~ ^/[a-zA-Z0-9_./-]+$ && $INSTALL_DIR != / ]] || die '安装目录须为无空格的绝对路径'
@@ -288,7 +296,7 @@ load_settings() {
   local key value
   while IFS='=' read -r key value; do
     case "$key" in
-      DOMAIN|MODE|PORT|USERNAME|TLS_MODE|IMAGE|DOWNLOAD_THREADS|CLEANUP_DAYS|CLEANUP_MB|MAX_DOWNLOAD_MB)
+      DOMAIN|MODE|PORT|USERNAME|TLS_MODE|IMAGE|SYNC_ENABLED|ACCOUNT_PROXY_TOKEN|DOWNLOAD_THREADS|CLEANUP_DAYS|CLEANUP_MB|MAX_DOWNLOAD_MB)
         printf -v "$key" '%s' "$value" ;;
     esac
   done < "$INSTALL_DIR/deployment.conf"
@@ -296,6 +304,8 @@ load_settings() {
 
 write_config() {
   local destination=$1 public_url="https://$DOMAIN" bind_port="$PORT:443" site="https://$DOMAIN" scheme=https
+  if [[ -z $ACCOUNT_PROXY_TOKEN ]]; then ACCOUNT_PROXY_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n'); fi
+  [[ $ACCOUNT_PROXY_TOKEN =~ ^[a-f0-9]{64}$ ]] || die '账号同步入口密钥无效'
   mkdir -p "$destination/certs"
   if [[ $MODE != origin ]]; then
     bind_port="127.0.0.1:$PORT:8080"
@@ -309,6 +319,7 @@ DATA_DIR=/data
 PORT=8080
 PUBLIC_BASE_URL=$public_url
 ACCESS_PASSWORD=
+ACCOUNT_PROXY_TOKEN=$ACCOUNT_PROXY_TOKEN
 DOWNLOAD_THREADS=$DOWNLOAD_THREADS
 AUTO_CLEANUP_DAYS=$CLEANUP_DAYS
 AUTO_CLEANUP_MAX_MB=$CLEANUP_MB
@@ -388,6 +399,7 @@ EOF
     header Cache-Control "no-store"
     reverse_proxy asspp:8080 {
         header_up -Authorization
+        header_up X-Asspp-Account-Proxy $ACCOUNT_PROXY_TOKEN
         header_up X-Forwarded-Proto $scheme
     }
 }
@@ -400,6 +412,8 @@ PORT=$PORT
 USERNAME=$USERNAME
 TLS_MODE=$TLS_MODE
 IMAGE=$IMAGE
+SYNC_ENABLED=$SYNC_ENABLED
+ACCOUNT_PROXY_TOKEN=$ACCOUNT_PROXY_TOKEN
 DOWNLOAD_THREADS=$DOWNLOAD_THREADS
 CLEANUP_DAYS=$CLEANUP_DAYS
 CLEANUP_MB=$CLEANUP_MB
@@ -478,7 +492,8 @@ apply_configuration() {
   cp -R "$INSTALL_DIR/certs" "$old_config/certs"
   if [[ $TLS_MODE == custom ]]; then cp "$STAGE_DIR/certs/"* "$INSTALL_DIR/certs/"; fi
   log '正在应用配置，容器将重建；进行中的下载可能需要重新发起'
-  if compose up -d --force-recreate --wait --wait-timeout 180; then
+  if configuration_up; then
+    if [[ $REPLACE_IMAGE == 1 ]]; then rm -f -- "$INSTALL_DIR/.active-override.yml"; fi
     log "配置已更新，旧配置保存在 $old_config"
   else
     log '配置启动失败，恢复旧配置'
@@ -486,6 +501,9 @@ apply_configuration() {
       cp -- "$old_config/$file" "$INSTALL_DIR/$file"
     done
     if [[ -f "$old_config/certs/origin.pem" ]]; then cp "$old_config/certs/"* "$INSTALL_DIR/certs/"; fi
+    if [[ $REPLACE_IMAGE == 1 && -f "$INSTALL_DIR/.rollback.yml" ]]; then
+      cp -- "$INSTALL_DIR/.rollback.yml" "$INSTALL_DIR/.active-override.yml"
+    fi
     compose up -d --force-recreate --wait --wait-timeout 180 || die '旧配置恢复启动也失败，请检查 logs'
     die '新配置未通过启动检查，已恢复旧配置'
   fi
@@ -493,6 +511,46 @@ apply_configuration() {
   STAGE_DIR=
   unset ACCESS_PASSWORD
   show_info
+}
+
+configuration_up() {
+  if [[ $REPLACE_IMAGE == 1 ]]; then
+    compose_base up -d --force-recreate --wait --wait-timeout 180
+  else
+    compose up -d --force-recreate --wait --wait-timeout 180
+  fi
+}
+
+build_sync() {
+  command -v curl >/dev/null 2>&1 || die '构建同步版需要 curl'
+  command -v sha256sum >/dev/null 2>&1 || die '构建同步版需要 sha256sum（coreutils）'
+  STAGE_DIR=$(mktemp -d)
+  log '下载并校验账号同步构建包；首次构建可能需要几分钟'
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/account-sync-1.1.0.tar.gz' \
+    -o "$STAGE_DIR/bundle.tar.gz"
+  printf '%s  %s\n' "$SYNC_BUNDLE_SHA256" "$STAGE_DIR/bundle.tar.gz" | sha256sum -c - >/dev/null || die '构建包校验失败，现有服务未变更'
+  mkdir "$STAGE_DIR/source"
+  tar -xzf "$STAGE_DIR/bundle.tar.gz" -C "$STAGE_DIR/source"
+  docker build --pull -t "$SYNC_IMAGE" "$STAGE_DIR/source" || die '同步版镜像构建失败，现有服务未变更'
+  rm -rf -- "$STAGE_DIR"
+  STAGE_DIR=
+}
+
+enable_sync() {
+  snapshot_images
+  build_sync
+  backup
+  SYNC_ENABLED=1
+  IMAGE=$SYNC_IMAGE
+  REPLACE_IMAGE=1
+  ACCESS_PASSWORD=$(cat "$INSTALL_DIR/access-password")
+  AUTH_HASH=$(cat "$INSTALL_DIR/auth.hash")
+  apply_configuration
+  if [[ $SCRIPT_PATH != "$INSTALL_DIR/assppweb.sh" ]]; then cp -- "$SCRIPT_PATH" "$INSTALL_DIR/assppweb.sh"; fi
+  chmod 700 "$INSTALL_DIR/assppweb.sh"
+  printf '%s\n' "$VERSION" > "$INSTALL_DIR/.assppweb-managed"
+  log '服务端同步已启用。请刷新电脑网页，点击“迁移本机已有账号到服务器”；其他设备随后打开同一网站即可读取。'
 }
 
 require_managed() {
@@ -559,7 +617,12 @@ snapshot_images() {
 update() {
   snapshot_images
   log '拉取新镜像；拉取失败不会停止现有服务'
-  compose_base pull
+  if [[ $SYNC_ENABLED == 1 ]]; then
+    build_sync
+    compose_base pull caddy
+  else
+    compose_base pull
+  fi
   backup
   if compose_base up -d --wait --wait-timeout 180; then
     rm -f -- "$INSTALL_DIR/.active-override.yml"
@@ -579,6 +642,9 @@ show_info() {
   load_settings
   printf '\n公网地址：https://%s\n登录用户名：%s\nWeb 回源端口：%s\n运行模式：%s\n' "$DOMAIN" "$USERNAME" "$PORT" "$MODE"
   printf '查看密码：sudo cat %s/access-password\n安装目录：%s\n快捷菜单：assppweb\n' "$INSTALL_DIR" "$INSTALL_DIR"
+  if [[ $SYNC_ENABLED == 1 ]]; then
+    printf 'Apple ID：服务端加密同步（同一网站账号共享）；密钥与会话位于 data/account-vault/，备份时须一起保留。\n'
+  fi
   if [[ $MODE == origin ]]; then
     printf '\nCloudflare 设置：\n'
     printf '  DNS：域名 A/AAAA 指向源站，开启橙云代理\n'
@@ -608,6 +674,7 @@ menu() {
     printf ' 7) 回滚镜像        8) 备份数据        9) 修改域名/端口/下载配置\n'
     printf '10) 修改用户名密码 11) 查看回源说明   12) 导入 Origin CA 证书\n'
     printf '13) 卸载（保留数据）                  0) 退出\n'
+    printf '14) 启用/升级服务端账号同步\n'
     read -r -p '请选择：' selection || return 0
     case "$selection" in
       1) action=status ;; 2) action=start ;; 3) action=stop ;; 4) action=restart ;;
@@ -619,6 +686,7 @@ menu() {
         if bash "$INSTALL_DIR/assppweb.sh" config --dir "$INSTALL_DIR" --cert "$CERT_FILE" --key "$KEY_FILE" --yes; then :; else log '证书配置失败，请检查提示'; fi
         continue ;;
       13) action=uninstall ;;
+      14) action=enable-sync ;;
       0) return 0 ;;
       *) log '无效选项'; continue ;;
     esac
@@ -637,13 +705,14 @@ main() {
     prepare_password
     install_docker
     docker_ready
+    if [[ $SYNC_ENABLED == 1 ]]; then build_sync; fi
     [[ -z $(docker ps -aq --filter label=com.docker.compose.project=assppweb) ]] || die '已存在名为 assppweb 的 Compose 项目；请管理现有部署'
     hash_password
     initialize_config
     lock_operation
     install_shortcut
     validate_config "$INSTALL_DIR"
-    compose pull
+    if [[ $SYNC_ENABLED == 1 ]]; then compose pull caddy; else compose pull; fi
     compose up -d --wait --wait-timeout 180
     log '应用及认证入口的容器健康检查通过'
     show_info
@@ -675,6 +744,7 @@ main() {
       fi
       apply_configuration ;;
     update) update ;;
+    enable-sync) enable_sync ;;
     rollback)
       [[ -f "$INSTALL_DIR/.rollback.yml" ]] || die '没有可用的镜像回滚记录'
       cp -- "$INSTALL_DIR/.rollback.yml" "$INSTALL_DIR/.active-override.yml"

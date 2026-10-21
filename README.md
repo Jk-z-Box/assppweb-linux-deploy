@@ -4,6 +4,20 @@
 
 支持安装时自定义 **Web 用户名、密码、回源端口**；部署后输入 **`assppweb`** 进入中文管理菜单。默认适配 **Cloudflare Origin Rules**，公网访问地址不需要带回源端口。
 
+## Apple ID 跨设备保持登录（v1.1）
+
+可选的**服务端账号同步版**已加入。Apple ID、密码和会话在服务器加密持久保存；电脑和手机通过同一个网站入口认证后，自动读取同一份账号库。服务器持有解密密钥，所有入口用户共享账号，适合个人私有部署。Apple 令牌过期或要求验证码时仍需重新认证。
+
+**已部署的用户直接运行下面这条升级命令**，保留原域名、回源端口、入口用户名密码和下载数据：
+
+```bash
+bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl --proto "=https" --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/install.sh -o "$f"; if [ "$EUID" -eq 0 ]; then bash "$f" enable-sync --yes; else sudo bash "$f" enable-sync --yes; fi'
+```
+
+升级会在服务器构建镜像，随后备份并重建容器。完成后刷新原电脑网页，点击 **“迁移本机已有账号到服务器”**；手机打开同一网址即可同步。之后快捷菜单增加 **14）启用/升级服务端账号同步**。新安装想启用此功能，可在安装脚本后加 `--sync`。
+
+详见 [同步版说明、数据范围与备份恢复](sync/README.md)。上游默认模式仍使用浏览器本地账号；`assppweb update` 本身不会把旧版管理脚本升级成同步版，请先执行上面的命令。
+
 ## 一键部署
 
 在 Linux 服务器上复制执行（需要 `curl`，普通用户需要 `sudo`）：
@@ -40,6 +54,7 @@ sudo bash install.sh
 1. **DNS**：添加域名的 A/AAAA 记录指向服务器，开启橙云代理。没有可用 IPv6 时不要填写 AAAA。
 2. **Origin Rules**：添加规则，表达式为 `(http.host eq "apps.example.com")`，将 **Destination port / 目标端口** 设置为安装时填写的端口，例如 `8443` 或 `18080`。保持 Host 和 SNI 为原域名。
 3. **SSL/TLS**：默认使用 Caddy 自动生成并续期的源站私有 CA 证书，应选择 **Full**。此模式对回源流量加密，但 Cloudflare 不校验源站证书身份。不要使用 Flexible。
+   如其他站点必须保留全局 Flexible，可在 **Configuration Rules** 中仅匹配本域名，将 **SSL 设置为 Full**，保留原 Origin Rule 的端口覆盖。
 4. **边缘证书**：开启 **Always Use HTTPS**，让 HTTP 请求在 Cloudflare 边缘跳转，避免 HTTP 请求回源到 HTTPS 端口。
 5. **WebSockets**：保持启用；`/wisp/` 需要 WebSocket 连接。
 6. 在云安全组及服务器网络策略中放行选定的源站 **TCP 端口**。脚本不会改写防火墙规则。
@@ -155,7 +170,7 @@ AssppWeb 自身的访问密码关闭，以避免重复登录；它的端口只�
 
 浏览器会缓存 Basic Auth 凭据；更改密码后，如未出现新登录弹窗，可关闭相关浏览器窗口或用无痕窗口重新访问。
 
-Apple ID 数据保存在浏览器 IndexedDB，服务器备份不包含浏览器账号备份。请使用 AssppWeb 设置页的加密导出功能保存账号。
+未启用同步版时，Apple ID 数据保存在浏览器 IndexedDB，服务器备份不包含这些账号；可在设置页加密导出。启用同步版后，账号密文及密钥保存在 `data/account-vault/`，随服务器备份一起保存，恢复时两者缺一不可。
 
 服务器目录：
 

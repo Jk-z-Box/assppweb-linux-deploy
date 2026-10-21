@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.enc
 *.tar.gz
+!releases/account-sync-*.tar.gz
 .env
 app.env
 access-password

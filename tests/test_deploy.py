@@ -126,6 +126,60 @@ class DeployTests(unittest.TestCase):
         self.assertEqual((self.deploy/'access-password').stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.deploy.stat().st_mode & 0o777, 0o700)
 
+    def test_sync_upgrade_preserves_configuration_and_replaces_rollback_override(self):
+        self.create(PORT='9010', USERNAME='originaladmin')
+        (self.deploy/'.active-override.yml').write_text('services: {}\n')
+        r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
+                      'build_sync() { :; }; main enable-sync --yes --dir "$1"', self.deploy)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('9010:443', (self.deploy/'compose.yml').read_text())
+        self.assertIn('originaladmin '+TEST_HASH, (self.deploy/'Caddyfile').read_text())
+        self.assertEqual((self.deploy/'access-password').read_text().strip(), PASSWORD)
+        self.assertIn('image: assppweb-sync:1.1.0', (self.deploy/'compose.yml').read_text())
+        self.assertIn('SYNC_ENABLED=1', (self.deploy/'deployment.conf').read_text())
+        self.assertFalse((self.deploy/'.active-override.yml').exists())
+        self.assertTrue(list((self.deploy/'backups').glob('assppweb-*.tar.gz')))
+        token = next(line.split('=',1)[1] for line in (self.deploy/'app.env').read_text().splitlines() if line.startswith('ACCOUNT_PROXY_TOKEN='))
+        self.assertEqual(len(token), 64)
+        self.assertIn('header_up X-Asspp-Account-Proxy '+token, (self.deploy/'Caddyfile').read_text())
+        self.assertNotIn(token, r.stdout)
+
+    def test_sync_build_failure_leaves_current_configuration_untouched(self):
+        self.create()
+        original = (self.deploy/'compose.yml').read_bytes()
+        r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
+                      'build_sync() { return 42; }; main enable-sync --yes --dir "$1"', self.deploy)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual((self.deploy/'compose.yml').read_bytes(), original)
+        self.assertFalse(any('stop' in call or 'up' in call for call in self.calls()))
+
+    def test_sync_startup_failure_restores_configuration(self):
+        self.create()
+        original = {name:(self.deploy/name).read_bytes() for name in ['compose.yml','Caddyfile','app.env','deployment.conf','assppweb.sh']}
+        r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
+                      'build_sync() { :; }; main enable-sync --yes --dir "$1"', self.deploy,
+                      env=dict(self.env, FAIL_ONCE_UP='1'))
+        self.assertNotEqual(r.returncode, 0)
+        for name, contents in original.items(): self.assertEqual((self.deploy/name).read_bytes(), contents)
+
+    def test_sync_update_rebuilds_application_without_registry_pull(self):
+        self.create(SYNC_ENABLED='1', IMAGE='assppweb-sync:1.1.0')
+        r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
+                      'build_sync() { printf "sync-build-done\\n"; }; main update --dir "$1"', self.deploy)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('sync-build-done', r.stdout)
+        pulls = [call for call in self.calls() if 'pull' in call]
+        self.assertEqual(len(pulls), 1)
+        self.assertEqual(pulls[0][-1], 'caddy')
+
+    def test_sync_bundle_matches_embedded_checksum(self):
+        digest = hashlib.sha256((ROOT/'releases/account-sync-1.1.0.tar.gz').read_bytes()).hexdigest()
+        self.assertIn('SYNC_BUNDLE_SHA256='+digest, SCRIPT.read_text())
+        with tarfile.open(ROOT/'releases/account-sync-1.1.0.tar.gz') as archive:
+            self.assertIn('Dockerfile', archive.getnames())
+            self.assertIn('overlay/backend/src/routes/accounts.ts', archive.getnames())
+            self.assertFalse(any(name.startswith('/') or '..' in Path(name).parts for name in archive.getnames()))
+
     def test_loopback_modes(self):
         for mode in ('proxy','local'):
             with self.subTest(mode=mode):
@@ -319,7 +373,8 @@ class DeployTests(unittest.TestCase):
                     accept=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
                     self.send_response(101); self.send_header('Upgrade','websocket'); self.send_header('Connection','Upgrade'); self.send_header('Sec-WebSocket-Accept',accept); self.end_headers()
                     return
-                body=json.dumps({'authorization':self.headers.get('Authorization'),'proto':self.headers.get('X-Forwarded-Proto')}).encode()
+                body=json.dumps({'authorization':self.headers.get('Authorization'),'proto':self.headers.get('X-Forwarded-Proto'),
+                                 'accountProxy':self.headers.get('X-Asspp-Account-Proxy')}).encode()
                 self.send_response(200); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
             def log_message(self,*args): pass
         backend=ThreadingHTTPServer(('127.0.0.1',0),Backend)
@@ -340,17 +395,19 @@ class DeployTests(unittest.TestCase):
             except OSError: time.sleep(.05)
         def request(path,auth=False,websocket=False):
             conn=http.client.HTTPConnection('127.0.0.1',port,timeout=5)
-            headers={}
+            headers={'X-Asspp-Account-Proxy':'spoofed-client-value'}
             if auth: headers['Authorization']='Basic '+base64.b64encode(('tester:'+PASSWORD).encode()).decode()
             if websocket: headers.update(Upgrade='websocket',Connection='Upgrade',**{'Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==','Sec-WebSocket-Version':'13'})
             conn.request('GET',path,headers=headers); response=conn.getresponse()
             status=response.status; body=response.read() if status!=101 else b''; conn.close()
             return status,body
-        for path in ('/','/api/settings','/wisp/','/api/install/not-a-uuid/payload.ipa'):
+        for path in ('/','/api/settings','/api/accounts','/wisp/','/api/install/not-a-uuid/payload.ipa'):
             self.assertEqual(request(path)[0],401,path)
         status,body=request('/api/settings',True)
         self.assertEqual(status,200); self.assertIsNone(json.loads(body)['authorization'])
         self.assertEqual(json.loads(body)['proto'],'https')
+        token = next(line.split('=',1)[1] for line in (self.deploy/'app.env').read_text().splitlines() if line.startswith('ACCOUNT_PROXY_TOKEN='))
+        self.assertEqual(json.loads(request('/api/accounts',True)[1])['accountProxy'], token)
         prefix='/api/install/12345678-1234-1234-1234-123456789abc/'
         for resource in ('manifest.plist','payload.ipa','icon-small.png','icon-large.png'):
             self.assertEqual(request(prefix+resource)[0],200,resource)
