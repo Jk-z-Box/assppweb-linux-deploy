@@ -4,7 +4,23 @@
 
 支持安装时自定义 **Web 用户名、密码、回源端口**；部署后输入 **`assppweb`** 进入中文管理菜单。默认适配 **Cloudflare Origin Rules**，公网访问地址不需要带回源端口。
 
-## Apple ID 跨设备保持登录（v1.1）
+## 网页登录与菜单更新（v1.2）
+
+网站入口改为独立的中文登录页面，电脑、手机均可使用；沿用原用户名和密码。登录后 Cookie 只保存随机会话凭证，不保存用户名、密码或 Apple ID。支持保持登录、退出当前设备、退出所有设备，以及修改用户名/密码后撤销旧会话。
+
+**旧版首次升级只需运行一次：**
+
+```bash
+bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl --proto "=https" --tlsv1.2 -fsSL --retry 3 https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/install.sh -o "$f"; if [ "$EUID" -eq 0 ]; then bash "$f" upgrade --yes; else sudo bash "$f" upgrade --yes; fi'
+```
+
+已有同步版会保持服务端同步，原来使用浏览器本地账号的部署仍保留该模式。域名、回源端口、网站用户名密码、账号和下载数据保留。安装路径非默认时，在 `upgrade --yes` 后加 `--dir /你的安装目录`。
+
+此后输入 **`assppweb` → `6）检查并更新管理器和应用`** 即可完成后续更新。管理器从 GitHub 读取发行清单、校验版本化脚本的 SHA-256，再下载校验构建包并构建；备份后重建服务，健康检查失败恢复旧配置与镜像。校验摘要与脚本来自同一 GitHub 仓库，通过 HTTPS 获取，作用是校验发布一致性，仍需信任仓库和发布账号。菜单 7 可回退上次更新的管理器、配置和镜像，不回退数据。
+
+进入登录/退出页面：`https://你的域名/_auth/login`。同步版还在电脑侧栏、手机与电脑的设置页面提供 **网站登录 / 退出** 入口。
+
+## Apple ID 跨设备保持登录
 
 可选的**服务端账号同步版**已加入。Apple ID、密码和会话在服务器加密持久保存；电脑和手机通过同一个网站入口认证后，自动读取同一份账号库。服务器持有解密密钥，所有入口用户共享账号，适合个人私有部署。Apple 令牌过期或要求验证码时仍需重新认证。
 
@@ -16,7 +32,7 @@ bash -c 'set -e; f=$(mktemp); trap '\''rm -f "$f"'\'' EXIT; curl --proto "=https
 
 升级会在服务器构建镜像，随后备份并重建容器。完成后刷新原电脑网页，点击 **“迁移本机已有账号到服务器”**；手机打开同一网址即可同步。之后快捷菜单增加 **14）启用/升级服务端账号同步**。新安装想启用此功能，可在安装脚本后加 `--sync`。
 
-详见 [同步版说明、数据范围与备份恢复](sync/README.md)。上游默认模式仍使用浏览器本地账号；`assppweb update` 本身不会把旧版管理脚本升级成同步版，请先执行上面的命令。
+详见 [同步版说明、数据范围与备份恢复](sync/README.md)。上游默认模式仍使用浏览器本地账号；`assppweb update` 保持已有的账号保存模式，不会自行迁移本机账号。
 
 ## 一键部署
 
@@ -47,7 +63,7 @@ sudo bash install.sh
   → https://apps.example.com:443
   → Cloudflare 橙云代理 + Origin Rule
   → 源站 IP:自定义端口（HTTPS，默认 8443）
-  → Caddy 用户名密码认证
+  → Caddy + Cookie 会话认证入口
   → AssppWeb 容器内的 8080 端口
 ```
 
@@ -92,8 +108,9 @@ assppweb
 | `assppweb config` | 交互修改域名、端口、用户名及下载/缓存参数 |
 | `assppweb passwd` | 修改登录用户名和密码 |
 | `assppweb info` | 显示访问地址和 Origin Rules 设置 |
-| `assppweb update` | 拉取新镜像、备份、更新；启动失败自动回滚镜像 |
-| `assppweb rollback` | 回退到上次更新前的镜像 |
+| `assppweb update` | 校验并更新管理脚本、认证入口和应用；备份后重建，失败自动恢复 |
+| `assppweb rollback` | 回退上次更新前的管理器、配置和镜像，数据保留 |
+| `assppweb enable-sync` | 启用服务端 Apple ID 同步，保留入口配置 |
 | `assppweb backup` | 停止正在运行的服务，备份后恢复原运行状态 |
 | `assppweb uninstall` | 删除本项目容器和网络，保留数据及快捷指令 |
 
@@ -160,15 +177,27 @@ ssh -L 18080:127.0.0.1:18080 user@your-server
 
 ## 登录与数据说明
 
-网页登录采用 Caddy HTTP Basic Authentication，浏览器会显示用户名/密码弹窗。这是实例入口账号，与网页内添加的 Apple ID 分开。密码以 bcrypt 哈希用于入口认证；为便于管理员取回，原始密码另存于 root 可读的 `/opt/assppweb/access-password`：
+网页登录采用 **表单 + 服务端会话 + Cookie**，不再使用浏览器 Basic Auth 弹窗。这是实例入口账号，与网页内添加的 Apple ID 分开。
+
+- 沿用 bcrypt（默认 cost 12）校验入口密码。登录成功签发 256 位随机会话令牌；服务端仅持久化令牌的 SHA-256 摘要、时间和凭据版本，不把原始令牌写入磁盘。
+- 公网 Cookie 使用 `__Host-` 前缀、`Secure`、`HttpOnly`、`SameSite=Lax`、`Path=/`，不设置 Domain；JavaScript 无法直接读取。生产 origin/proxy 模式要求公网 HTTPS。本机 HTTP 测试使用独立名称且不启用 Secure。
+- 勾选“保持登录”：最长 7 天，连续 24 小时未访问即过期；未勾选：浏览器会话 Cookie，服务端最长 12 小时、空闲 2 小时。浏览器的会话恢复功能可能保留会话 Cookie，主动退出才是可靠的结束方式。
+- 网站密码、用户名或公网地址变化会撤销旧会话；重启不主动登出，未过期会话仍可用。当前设备及全部设备退出均在服务端撤销，旧 Cookie 无法再次访问。
+- 登录、退出使用 JSON、自定义请求头和严格 Origin 校验；受保护的写操作及 WebSocket 握手也检查 Origin，防止跨站请求。认证响应禁止缓存，登录页有 CSP 防护。
+- 每个代理连接来源 5 分钟最多 5 次登录尝试，全局最多 30 次，同时最多执行 2 次 bcrypt 校验。Cloudflare 场景按边缘节点的连接地址计数，不信任客户端伪造的 IP 头；限速是进程内状态，重启会清除计数。
+- 认证保护页面、API 和新的 Wisp WebSocket 连接。退出后已在传输的数据无法收回；现有 WebSocket 最长 15 分钟断开，重新连接时重新认证。同步版前台页面约每 15 秒检查会话，过期后跳回登录页。
+
+Cookie 本身不是加密或万能安全保证；HTTPS、随机令牌、撤销、过期、防跨站请求和强密码需共同生效。`HttpOnly` 也无法阻止 XSS 以用户身份发请求。相关原则见 [OWASP 会话管理指南](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)。
+
+**为了保留现有的管理员取回密码功能，原始网站密码仍存放在 root 可读的 `/opt/assppweb/access-password`（600 权限）**，不是“服务器只存哈希”。认证容器只挂载 bcrypt 文件，不挂载此原始密码文件：
 
 ```bash
 sudo cat /opt/assppweb/access-password
 ```
 
-AssppWeb 自身的访问密码关闭，以避免重复登录；它的端口只存在于 Docker 内部网络。入口保护页面、API 和 Wisp WebSocket。**仅含 UUID 的安装 manifest、IPA 和图标链接允许无登录访问**，以便 iOS 系统下载；持有这些链接的人可以获取对应文件。`/api/install/<id>/url` 等其他路径仍需登录。不要在完成部署后额外公开映射 AssppWeb 容器的 8080 端口。
+AssppWeb 自身的访问密码关闭；应用与认证容器均不公开映射端口，Caddy 统一检查会话。**仅含 UUID 的安装 manifest、IPA 和图标链接允许无登录访问**，以便 iOS 系统下载；持有这些链接的人可以获取对应文件。`/api/install/<id>/url` 等其他路径仍需登录。不要额外公开映射应用的 8080 或认证容器的 3000 端口。
 
-浏览器会缓存 Basic Auth 凭据；更改密码后，如未出现新登录弹窗，可关闭相关浏览器窗口或用无痕窗口重新访问。
+电脑和手机各自登录网站、持有各自的 Cookie，登录后读取同一服务端账号库；不需要跨设备复制 Cookie。网站会话过期不会删除服务器上的 Apple ID。
 
 未启用同步版时，Apple ID 数据保存在浏览器 IndexedDB，服务器备份不包含这些账号；可在设置页加密导出。启用同步版后，账号密文及密钥保存在 `data/account-vault/`，随服务器备份一起保存，恢复时两者缺一不可。
 
@@ -183,13 +212,15 @@ AssppWeb 自身的访问密码关闭，以避免重复登录；它的端口只�
 ├── app.env             上游应用配置
 ├── access-password    管理员可读的登录密码
 ├── auth.hash           bcrypt 哈希
+├── gateway.env         登录入口配置（无原始密码）
+├── sessions/           网站会话摘要及有效期
 ├── certs/              导入的源站证书
 ├── data/               IPA 和已完成任务元数据
 ├── caddy/              Caddy 证书、私有 CA 和运行数据
 └── backups/            完整备份及配置变更备份
 ```
 
-只恢复已完成的下载任务；未完成任务可能在重启后丢失。`update` 更新的是应用/Caddy 镜像，不会自动更新管理脚本。镜像回滚不回滚数据，且依赖旧镜像尚未被 Docker 清理；回滚选择会保留到下一次成功更新。更换管理脚本前请先备份并检查版本兼容性。
+只恢复已完成的下载任务；未完成任务可能在重启后丢失。v1.2 的 `update` 同时更新管理器、认证入口、应用及 Caddy；旧版管理器需先执行本页的首次升级命令。回滚恢复上次升级前的配置（包括当时的入口凭据）和管理器，依赖旧镜像尚未被 Docker 清理，不回退账号或下载数据。回退到 v1.1 会重新使用 Basic Auth 弹窗。
 
 ## 备份恢复
 
@@ -216,17 +247,19 @@ sudo bash /opt/assppweb-restored/assppweb.sh start
 bash -n install.sh
 shellcheck install.sh
 python3 tests/test_deploy.py
+(cd gateway && npm ci && npm test)
 ```
 
 可选的真实组件测试（无需 Docker daemon）：
 
 ```bash
+NODE_BIN=/absolute/path/to/node \
 CADDY_BIN=/absolute/path/to/caddy \
 COMPOSE_BIN=/absolute/path/to/docker-compose \
 python3 tests/test_deploy.py
 ```
 
-测试覆盖参数和权限、配置生成、真实 Compose 配置解析、真实 Caddy 用户名密码认证、源站 TLS 握手、安装资源例外、WebSocket 升级、备份失败恢复、配置失败恢复和镜像回滚。Docker 生命周期使用模拟命令验证；当前发布未在远程 Linux VPS 上实际安装 Docker，也未实测 Apple ID 登录和 iOS 安装。
+测试覆盖参数和权限、配置生成、真实 Compose 配置解析、真实 Caddy + Node Cookie 登录认证、源站 TLS 握手、安装资源例外、WebSocket 升级、CSRF、会话撤销/过期、备份失败恢复、配置失败恢复、管理器校验升级和成套回滚。Docker 生命周期使用模拟命令验证；当前发布未在远程 Linux VPS 上实际安装 Docker，也未实测 Apple ID 登录和 iOS 安装。
 
 ## 上游与许可
 

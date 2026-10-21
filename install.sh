@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-VERSION=1.1.0
+VERSION=1.2.0
 COMMAND=install
 INSTALL_DIR=/opt/assppweb
 DOMAIN=
@@ -18,8 +18,12 @@ ACCESS_PASSWORD=
 IMAGE=ghcr.io/lakr233/assppweb:latest
 SYNC_ENABLED=0
 ACCOUNT_PROXY_TOKEN=
-SYNC_IMAGE=assppweb-sync:1.1.0
-SYNC_BUNDLE_SHA256=140f2f9a1ddae136dccad218a1f0f32270fffeb2336e7b45fc8dd0b24c24fff0
+SYNC_IMAGE=assppweb-sync:1.2.0
+SYNC_BUNDLE_SHA256=66473b63b923982ebb6bc24dd467cf7c40d98158935945c1eca45b2104fe60e4
+GATEWAY_IMAGE=assppweb-gateway:1.2.0
+GATEWAY_BUNDLE_SHA256=b599439a9843485b9771e0af366e96d3eff4502d80b66b8358e1693aada289e6
+LAST_CONFIG_BACKUP=
+SNAPSHOT_PREVIOUS=
 REPLACE_IMAGE=0
 CADDY_IMAGE=caddy:2-alpine
 PASSWORD_FILE=
@@ -42,7 +46,7 @@ usage() {
 AssppWeb Linux 一键部署管理器
 
 用法：bash install.sh [命令] [选项]
-命令：install、menu、config、passwd、info、update、rollback、start、stop、restart、status、logs、backup、enable-sync、uninstall
+命令：install、menu、config、passwd、info、update、upgrade、rollback、start、stop、restart、status、logs、backup、enable-sync、uninstall
 已安装后输入 assppweb 即可进入中文管理菜单。
 
 选项：
@@ -66,6 +70,7 @@ AssppWeb Linux 一键部署管理器
   --version                显示版本
 
 默认自动生成源站证书，Cloudflare SSL/TLS 须设为 Full；不要使用 Flexible。
+update 从 GitHub 校验并更新管理器和应用；upgrade 应用当前下载的管理器版本。
 config 修改配置并重建容器；passwd 修改用户名/密码；info 显示回源说明。
 enable-sync 升级现有部署为服务端加密账号同步；保留域名、端口与网站密码。
 uninstall 删除本项目容器和网络，保留安装包、配置、证书及备份。
@@ -104,7 +109,7 @@ parse_args() {
     esac
   done
   case "$COMMAND" in
-    install|menu|config|passwd|info|update|rollback|start|stop|restart|status|logs|backup|enable-sync|uninstall) ;;
+    install|menu|config|passwd|info|update|upgrade|rollback|start|stop|restart|status|logs|backup|enable-sync|uninstall) ;;
     *) die "未知命令：$COMMAND" ;;
   esac
   [[ $INSTALL_DIR =~ ^/[a-zA-Z0-9_./-]+$ && $INSTALL_DIR != / ]] || die '安装目录须为无空格的绝对路径'
@@ -326,6 +331,11 @@ AUTO_CLEANUP_MAX_MB=$CLEANUP_MB
 MAX_DOWNLOAD_MB=$MAX_DOWNLOAD_MB
 UNSAFE_DANGEROUSLY_DISABLE_HTTPS_REDIRECT=$([[ $MODE == local ]] && printf true || printf false)
 EOF
+  cat > "$destination/gateway.env" <<EOF
+PUBLIC_URL=$public_url
+AUTH_USERNAME=$USERNAME
+ACCOUNT_PROXY_TOKEN=$ACCOUNT_PROXY_TOKEN
+EOF
   cat > "$destination/compose.yml" <<EOF
 services:
   asspp:
@@ -346,10 +356,34 @@ services:
       options:
         max-size: '10m'
         max-file: '3'
+  gateway:
+    image: $GATEWAY_IMAGE
+    restart: unless-stopped
+    env_file:
+      - ./gateway.env
+    volumes:
+      - ./auth.hash:/config/auth.hash:ro,Z
+      - ./sessions:/sessions:Z
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
   caddy:
     image: $CADDY_IMAGE
     restart: unless-stopped
     depends_on:
+      gateway:
+        condition: service_healthy
       asspp:
         condition: service_healthy
     ports:
@@ -392,15 +426,31 @@ EOF
     fi
   fi
   cat >> "$destination/Caddyfile" <<EOF
-    @protected not path_regexp install "^/api/install/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/(manifest\\.plist|payload\\.ipa|icon-small\\.png|icon-large\\.png)\$"
-    basic_auth @protected {
-        $USERNAME $AUTH_HASH
+    header Cache-Control "no-store, private"
+    header Referrer-Policy "same-origin"
+    handle /_auth/* {
+        reverse_proxy gateway:3000 {
+            header_up -Authorization
+            header_up X-Asspp-Gateway-Secret $ACCOUNT_PROXY_TOKEN
+            header_up X-Asspp-Peer {remote_host}
+        }
     }
-    header Cache-Control "no-store"
-    reverse_proxy asspp:8080 {
-        header_up -Authorization
-        header_up X-Asspp-Account-Proxy $ACCOUNT_PROXY_TOKEN
-        header_up X-Forwarded-Proto $scheme
+    handle {
+        @protected not path_regexp install "^/api/install/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/(manifest\\.plist|payload\\.ipa|icon-small\\.png|icon-large\\.png)\$"
+        forward_auth @protected gateway:3000 {
+            uri /verify
+            header_up -Authorization
+            header_up X-Asspp-Gateway-Secret $ACCOUNT_PROXY_TOKEN
+            header_up X-Asspp-Peer {remote_host}
+        }
+        reverse_proxy asspp:8080 {
+            header_up -Authorization
+            header_up -Cookie
+            header_up -X-Asspp-Gateway-Secret
+            header_up X-Asspp-Account-Proxy $ACCOUNT_PROXY_TOKEN
+            header_up X-Forwarded-Proto $scheme
+            stream_timeout 15m
+        }
     }
 }
 EOF
@@ -419,7 +469,7 @@ CLEANUP_DAYS=$CLEANUP_DAYS
 CLEANUP_MB=$CLEANUP_MB
 MAX_DOWNLOAD_MB=$MAX_DOWNLOAD_MB
 EOF
-  chmod 600 "$destination/"{app.env,compose.yml,Caddyfile,deployment.conf,auth.hash,access-password}
+  chmod 600 "$destination/"{app.env,gateway.env,compose.yml,Caddyfile,deployment.conf,auth.hash,access-password}
 }
 
 copy_certificates() {
@@ -449,7 +499,7 @@ validate_config() {
 initialize_config() {
   mkdir -p -- "$INSTALL_DIR"
   chmod 700 "$INSTALL_DIR"
-  mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/caddy/data" "$INSTALL_DIR/caddy/config" "$INSTALL_DIR/backups"
+  mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/caddy/data" "$INSTALL_DIR/caddy/config" "$INSTALL_DIR/backups" "$INSTALL_DIR/sessions"
   write_config "$INSTALL_DIR"
   copy_certificates "$INSTALL_DIR"
   cp -- "$SCRIPT_PATH" "$INSTALL_DIR/assppweb.sh"
@@ -485,11 +535,14 @@ apply_configuration() {
   validate_config "$STAGE_DIR"
   old_config="$INSTALL_DIR/backups/config-$(date -u +%Y%m%dT%H%M%SZ)-$$"
   mkdir -p "$old_config"
-  for file in compose.yml Caddyfile app.env deployment.conf auth.hash access-password; do
-    cp -- "$INSTALL_DIR/$file" "$old_config/$file"
+  for file in compose.yml Caddyfile app.env gateway.env deployment.conf auth.hash access-password; do
+    if [[ -f "$INSTALL_DIR/$file" ]]; then cp -- "$INSTALL_DIR/$file" "$old_config/$file"; fi
     cp -- "$STAGE_DIR/$file" "$INSTALL_DIR/$file"
   done
+  cp -- "$INSTALL_DIR/assppweb.sh" "$old_config/assppweb.sh"
+  cp -- "$INSTALL_DIR/.assppweb-managed" "$old_config/.assppweb-managed"
   cp -R "$INSTALL_DIR/certs" "$old_config/certs"
+  mkdir -p "$INSTALL_DIR/sessions"
   if [[ $TLS_MODE == custom ]]; then cp "$STAGE_DIR/certs/"* "$INSTALL_DIR/certs/"; fi
   log '正在应用配置，容器将重建；进行中的下载可能需要重新发起'
   if configuration_up; then
@@ -497,27 +550,26 @@ apply_configuration() {
     log "配置已更新，旧配置保存在 $old_config"
   else
     log '配置启动失败，恢复旧配置'
-    for file in compose.yml Caddyfile app.env deployment.conf auth.hash access-password; do
-      cp -- "$old_config/$file" "$INSTALL_DIR/$file"
-    done
+    restore_config "$old_config"
     if [[ -f "$old_config/certs/origin.pem" ]]; then cp "$old_config/certs/"* "$INSTALL_DIR/certs/"; fi
     if [[ $REPLACE_IMAGE == 1 && -f "$INSTALL_DIR/.rollback.yml" ]]; then
       cp -- "$INSTALL_DIR/.rollback.yml" "$INSTALL_DIR/.active-override.yml"
     fi
-    compose up -d --force-recreate --wait --wait-timeout 180 || die '旧配置恢复启动也失败，请检查 logs'
+    compose up -d --remove-orphans --force-recreate --wait --wait-timeout 180 || die '旧配置恢复启动也失败，请检查 logs'
     die '新配置未通过启动检查，已恢复旧配置'
   fi
   rm -rf -- "$STAGE_DIR"
   STAGE_DIR=
   unset ACCESS_PASSWORD
+  LAST_CONFIG_BACKUP=$old_config
   show_info
 }
 
 configuration_up() {
   if [[ $REPLACE_IMAGE == 1 ]]; then
-    compose_base up -d --force-recreate --wait --wait-timeout 180
+    compose_base up -d --remove-orphans --force-recreate --wait --wait-timeout 180
   else
-    compose up -d --force-recreate --wait --wait-timeout 180
+    compose up -d --remove-orphans --force-recreate --wait --wait-timeout 180
   fi
 }
 
@@ -527,7 +579,7 @@ build_sync() {
   STAGE_DIR=$(mktemp -d)
   log '下载并校验账号同步构建包；首次构建可能需要几分钟'
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/account-sync-1.1.0.tar.gz' \
+    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/account-sync-1.2.0.tar.gz' \
     -o "$STAGE_DIR/bundle.tar.gz"
   printf '%s  %s\n' "$SYNC_BUNDLE_SHA256" "$STAGE_DIR/bundle.tar.gz" | sha256sum -c - >/dev/null || die '构建包校验失败，现有服务未变更'
   mkdir "$STAGE_DIR/source"
@@ -537,20 +589,41 @@ build_sync() {
   STAGE_DIR=
 }
 
+build_gateway() {
+  command -v curl >/dev/null 2>&1 || die '构建登录入口需要 curl'
+  command -v sha256sum >/dev/null 2>&1 || die '构建登录入口需要 sha256sum（coreutils）'
+  STAGE_DIR=$(mktemp -d)
+  log '下载并校验 Cookie 登录入口构建包'
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/gateway-1.2.0.tar.gz' \
+    -o "$STAGE_DIR/bundle.tar.gz"
+  printf '%s  %s\n' "$GATEWAY_BUNDLE_SHA256" "$STAGE_DIR/bundle.tar.gz" | sha256sum -c - >/dev/null || die '登录入口构建包校验失败'
+  mkdir "$STAGE_DIR/source"
+  tar -xzf "$STAGE_DIR/bundle.tar.gz" -C "$STAGE_DIR/source"
+  docker build --pull -t "$GATEWAY_IMAGE" "$STAGE_DIR/source" || die '登录入口构建失败，现有服务未变更'
+  rm -rf -- "$STAGE_DIR"
+  STAGE_DIR=
+}
+
 enable_sync() {
-  snapshot_images
-  build_sync
-  backup
   SYNC_ENABLED=1
-  IMAGE=$SYNC_IMAGE
-  REPLACE_IMAGE=1
-  ACCESS_PASSWORD=$(cat "$INSTALL_DIR/access-password")
-  AUTH_HASH=$(cat "$INSTALL_DIR/auth.hash")
-  apply_configuration
-  if [[ $SCRIPT_PATH != "$INSTALL_DIR/assppweb.sh" ]]; then cp -- "$SCRIPT_PATH" "$INSTALL_DIR/assppweb.sh"; fi
-  chmod 700 "$INSTALL_DIR/assppweb.sh"
-  printf '%s\n' "$VERSION" > "$INSTALL_DIR/.assppweb-managed"
-  log '服务端同步已启用。请刷新电脑网页，点击“迁移本机已有账号到服务器”；其他设备随后打开同一网站即可读取。'
+  upgrade
+  log '服务端同步已启用。刷新电脑网页，点击“迁移本机已有账号到服务器”；其他设备登录同一网站即可读取。'
+}
+
+restore_config() {
+  local directory=$1 file
+  for file in compose.yml Caddyfile app.env gateway.env deployment.conf auth.hash access-password assppweb.sh .assppweb-managed; do
+    if [[ -f "$directory/$file" ]]; then
+      cp -- "$directory/$file" "$INSTALL_DIR/$file"
+    else
+      rm -f -- "$INSTALL_DIR/$file"
+    fi
+  done
+  if [[ -d "$directory/certs" ]]; then
+    rm -rf -- "$INSTALL_DIR/certs"
+    cp -R "$directory/certs" "$INSTALL_DIR/certs"
+  fi
 }
 
 require_managed() {
@@ -572,6 +645,14 @@ cleanup() {
   fi
   if [[ -n $TEMP_FILE && -f $TEMP_FILE ]]; then rm -f -- "$TEMP_FILE"; fi
   if [[ -n $STAGE_DIR && -d $STAGE_DIR ]]; then rm -rf -- "$STAGE_DIR"; fi
+  if [[ -n $SNAPSHOT_PREVIOUS && -d $SNAPSHOT_PREVIOUS ]]; then
+    if [[ -f "$SNAPSHOT_PREVIOUS/rollback.yml" ]]; then
+      cp -- "$SNAPSHOT_PREVIOUS/rollback.yml" "$INSTALL_DIR/.rollback.yml"
+    else
+      rm -f -- "$INSTALL_DIR/.rollback.yml"
+    fi
+    rm -rf -- "$SNAPSHOT_PREVIOUS"
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -600,6 +681,8 @@ backup() {
 
 snapshot_images() {
   local service container image_id services
+  SNAPSHOT_PREVIOUS=$(mktemp -d "$INSTALL_DIR/.snapshot.XXXXXX")
+  if [[ -f "$INSTALL_DIR/.rollback.yml" ]]; then cp -- "$INSTALL_DIR/.rollback.yml" "$SNAPSHOT_PREVIOUS/rollback.yml"; fi
   services=$(compose config --services)
   TEMP_FILE="$INSTALL_DIR/.rollback.yml.part"
   printf 'services:\n' > "$TEMP_FILE"
@@ -614,33 +697,62 @@ snapshot_images() {
   TEMP_FILE=
 }
 
+# The manifest selects an immutable, versioned script. Never source downloaded metadata.
 update() {
+  local release_version release_hash extra
+  command -v curl >/dev/null 2>&1 || die '更新需要 curl'
+  command -v sha256sum >/dev/null 2>&1 || die '更新需要 sha256sum（coreutils）'
+  STAGE_DIR=$(mktemp -d)
+  log '检查 GitHub 最新版本并校验管理脚本'
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/latest.txt' -o "$STAGE_DIR/latest.txt"
+  read -r release_version release_hash extra < "$STAGE_DIR/latest.txt" || die '版本清单读取失败'
+  [[ $release_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $release_hash =~ ^[a-f0-9]{64}$ && -z $extra ]] || die '版本清单格式无效'
+  [[ $(printf '%s\n%s\n' "$VERSION" "$release_version" | sort -V | head -n1) == "$VERSION" ]] || die '远端版本更旧，拒绝降级'
+  curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+    "https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/manager-$release_version.sh" -o "$STAGE_DIR/manager.sh"
+  printf '%s  %s\n' "$release_hash" "$STAGE_DIR/manager.sh" | sha256sum -c - >/dev/null || die '管理脚本校验失败；现有服务与管理器均未变更'
+  bash -n "$STAGE_DIR/manager.sh" || die '新版脚本语法检查失败'
+  [[ $(bash "$STAGE_DIR/manager.sh" --version) == "$release_version" ]] || die '脚本版本与清单不符'
+  log "应用版本 ${release_version}；会先构建、备份，再重建容器"
+  # The new manager obtains its own operation lock. Do not inherit a locked descriptor.
+  if { true >&9; } 2>/dev/null; then flock -u 9; exec 9>&-; fi
+  bash "$STAGE_DIR/manager.sh" upgrade --dir "$INSTALL_DIR" --yes
+}
+
+upgrade() {
+  validate_settings
   snapshot_images
-  log '拉取新镜像；拉取失败不会停止现有服务'
+  build_gateway
   if [[ $SYNC_ENABLED == 1 ]]; then
     build_sync
+    IMAGE=$SYNC_IMAGE
     compose_base pull caddy
   else
-    compose_base pull
+    compose_base pull asspp caddy
   fi
   backup
-  if compose_base up -d --wait --wait-timeout 180; then
-    rm -f -- "$INSTALL_DIR/.active-override.yml"
-    log '更新完成；旧镜像已记录，可使用 rollback 回退'
-  else
-    log '更新启动失败，正在恢复旧镜像'
-    cp -- "$INSTALL_DIR/.rollback.yml" "$INSTALL_DIR/.active-override.yml"
-    if compose up -d --wait --wait-timeout 180; then
-      die '新版本未通过启动检查，已恢复旧镜像。数据备份位于 backups/'
-    else
-      die '新版本和回滚启动均失败，请运行 logs 检查；备份已保留'
-    fi
+  REPLACE_IMAGE=1
+  ACCESS_PASSWORD=$(cat "$INSTALL_DIR/access-password")
+  AUTH_HASH=$(cat "$INSTALL_DIR/auth.hash")
+  apply_configuration
+  # Keep configuration and manager paired with the image snapshot for manual rollback.
+  printf '%s\n' "$LAST_CONFIG_BACKUP" > "$INSTALL_DIR/.rollback-config"
+  if [[ $SCRIPT_PATH != "$INSTALL_DIR/assppweb.sh" ]]; then
+    cp -- "$SCRIPT_PATH" "$INSTALL_DIR/assppweb.sh.new"
+    chmod 700 "$INSTALL_DIR/assppweb.sh.new"
+    mv -- "$INSTALL_DIR/assppweb.sh.new" "$INSTALL_DIR/assppweb.sh"
   fi
+  printf '%s\n' "$VERSION" > "$INSTALL_DIR/.assppweb-managed"
+  rm -rf -- "$SNAPSHOT_PREVIOUS"
+  SNAPSHOT_PREVIOUS=
+  log "已更新管理器及应用至 ${VERSION}；以后输入 assppweb，选择 6 即可完整更新。"
 }
 
 show_info() {
   load_settings
   printf '\n公网地址：https://%s\n登录用户名：%s\nWeb 回源端口：%s\n运行模式：%s\n' "$DOMAIN" "$USERNAME" "$PORT" "$MODE"
+  printf '登录方式：网页表单 + Cookie 会话；登录/退出页面：/_auth/login\n'
   printf '查看密码：sudo cat %s/access-password\n安装目录：%s\n快捷菜单：assppweb\n' "$INSTALL_DIR" "$INSTALL_DIR"
   if [[ $SYNC_ENABLED == 1 ]]; then
     printf 'Apple ID：服务端加密同步（同一网站账号共享）；密钥与会话位于 data/account-vault/，备份时须一起保留。\n'
@@ -670,8 +782,8 @@ menu() {
   while true; do
     printf '\n========== AssppWeb 管理菜单 ==========\n'
     printf ' 1) 状态            2) 启动            3) 停止\n'
-    printf ' 4) 重启            5) 查看日志        6) 更新镜像\n'
-    printf ' 7) 回滚镜像        8) 备份数据        9) 修改域名/端口/下载配置\n'
+    printf ' 4) 重启            5) 查看日志        6) 检查并更新管理器和应用\n'
+    printf ' 7) 回滚上次更新        8) 备份数据        9) 修改域名/端口/下载配置\n'
     printf '10) 修改用户名密码 11) 查看回源说明   12) 导入 Origin CA 证书\n'
     printf '13) 卸载（保留数据）                  0) 退出\n'
     printf '14) 启用/升级服务端账号同步\n'
@@ -690,7 +802,11 @@ menu() {
       0) return 0 ;;
       *) log '无效选项'; continue ;;
     esac
-    if bash "$INSTALL_DIR/assppweb.sh" "$action" --dir "$INSTALL_DIR"; then :; else log '操作未成功，请查看上方错误信息'; fi
+    if bash "$INSTALL_DIR/assppweb.sh" "$action" --dir "$INSTALL_DIR"; then
+      case "$action" in update|enable-sync|rollback) exec bash "$INSTALL_DIR/assppweb.sh" menu --dir "$INSTALL_DIR" ;; esac
+    else
+      log '操作未成功，请查看上方错误信息'
+    fi
   done
 }
 
@@ -707,12 +823,13 @@ main() {
     docker_ready
     if [[ $SYNC_ENABLED == 1 ]]; then build_sync; fi
     [[ -z $(docker ps -aq --filter label=com.docker.compose.project=assppweb) ]] || die '已存在名为 assppweb 的 Compose 项目；请管理现有部署'
+    build_gateway
     hash_password
     initialize_config
     lock_operation
     install_shortcut
     validate_config "$INSTALL_DIR"
-    if [[ $SYNC_ENABLED == 1 ]]; then compose pull caddy; else compose pull; fi
+    if [[ $SYNC_ENABLED == 1 ]]; then compose pull caddy; else compose pull asspp caddy; fi
     compose up -d --wait --wait-timeout 180
     log '应用及认证入口的容器健康检查通过'
     show_info
@@ -744,12 +861,18 @@ main() {
       fi
       apply_configuration ;;
     update) update ;;
+    upgrade) upgrade ;;
     enable-sync) enable_sync ;;
     rollback)
       [[ -f "$INSTALL_DIR/.rollback.yml" ]] || die '没有可用的镜像回滚记录'
+      if [[ -f "$INSTALL_DIR/.rollback-config" ]]; then
+        rollback_config=$(cat "$INSTALL_DIR/.rollback-config")
+        [[ $rollback_config == "$INSTALL_DIR"/backups/config-* && -f "$rollback_config/compose.yml" ]] || die '回滚配置记录无效'
+        restore_config "$rollback_config"
+      fi
       cp -- "$INSTALL_DIR/.rollback.yml" "$INSTALL_DIR/.active-override.yml"
-      compose up -d --wait --wait-timeout 180
-      log '已回滚镜像；本操作不回滚数据' ;;
+      compose up -d --remove-orphans --wait --wait-timeout 180
+      log '已回滚上次更新的镜像、配置及管理器；账号和下载数据保留'  ;;
     start) compose up -d --wait --wait-timeout 180 ;;
     stop) compose stop ;;
     restart) compose restart ;;

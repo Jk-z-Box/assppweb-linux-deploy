@@ -16,3 +16,9 @@ backups/
 .operation.lock
 .rollback.yml
 .active-override.yml
+
+node_modules/
+!releases/gateway-*.tar.gz
+gateway.env
+sessions/
+.rollback-config

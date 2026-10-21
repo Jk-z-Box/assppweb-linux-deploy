@@ -1,0 +1,13 @@
+{
+  "name": "assppweb-session-gateway",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "3.0.2"
+  }
+}

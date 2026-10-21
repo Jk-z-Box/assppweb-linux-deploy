@@ -50,7 +50,7 @@ if a and a[0]=='run':
 if a[:2] == ['compose','version']:
     print(os.environ.get('MOCK_COMPOSE_VERSION','2.30.0')); sys.exit(0)
 if a and a[0]=='compose':
-    if 'config' in a and '--services' in a: print('asspp\ncaddy')
+    if 'config' in a and '--services' in a: print('asspp\ngateway\ncaddy')
     if 'ps' in a:
         if '--status' in a:
             if not os.environ.get('SERVICES_STOPPED'): print('asspp\ncaddy')
@@ -102,7 +102,7 @@ class DeployTests(unittest.TestCase):
         env = dict(self.env, **overrides)
         # Do not change host package managers, system services, /usr/local/bin, or require root.
         return self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
-                         'install_shortcut() { :; }; main "$@"',
+                         'install_shortcut() { :; }; build_gateway() { :; }; build_sync() { :; }; main "$@"',
                          *args, '--dir', self.deploy, env=env)
 
     def calls(self):
@@ -121,7 +121,9 @@ class DeployTests(unittest.TestCase):
         self.assertNotIn('ports:', (self.deploy/'compose.yml').read_text().split('  caddy:')[0])
         self.assertIn('PUBLIC_BASE_URL=https://apps.example.com\n', (self.deploy/'app.env').read_text())
         self.assertIn('ACCESS_PASSWORD=\n', (self.deploy/'app.env').read_text())
-        self.assertIn('tester '+TEST_HASH, (self.deploy/'Caddyfile').read_text())
+        self.assertIn('AUTH_USERNAME=tester', (self.deploy/'gateway.env').read_text())
+        self.assertEqual(TEST_HASH, (self.deploy/'auth.hash').read_text().strip())
+        self.assertNotIn('basic_auth', (self.deploy/'Caddyfile').read_text())
         self.assertNotIn(PASSWORD, (self.deploy/'Caddyfile').read_text())
         self.assertEqual((self.deploy/'access-password').stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.deploy.stat().st_mode & 0o777, 0o700)
@@ -130,12 +132,12 @@ class DeployTests(unittest.TestCase):
         self.create(PORT='9010', USERNAME='originaladmin')
         (self.deploy/'.active-override.yml').write_text('services: {}\n')
         r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
-                      'build_sync() { :; }; main enable-sync --yes --dir "$1"', self.deploy)
+                      'build_gateway() { :; }; build_sync() { :; }; main enable-sync --yes --dir "$1"', self.deploy)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('9010:443', (self.deploy/'compose.yml').read_text())
-        self.assertIn('originaladmin '+TEST_HASH, (self.deploy/'Caddyfile').read_text())
+        self.assertIn('AUTH_USERNAME=originaladmin', (self.deploy/'gateway.env').read_text())
         self.assertEqual((self.deploy/'access-password').read_text().strip(), PASSWORD)
-        self.assertIn('image: assppweb-sync:1.1.0', (self.deploy/'compose.yml').read_text())
+        self.assertIn('image: assppweb-sync:1.2.0', (self.deploy/'compose.yml').read_text())
         self.assertIn('SYNC_ENABLED=1', (self.deploy/'deployment.conf').read_text())
         self.assertFalse((self.deploy/'.active-override.yml').exists())
         self.assertTrue(list((self.deploy/'backups').glob('assppweb-*.tar.gz')))
@@ -148,7 +150,7 @@ class DeployTests(unittest.TestCase):
         self.create()
         original = (self.deploy/'compose.yml').read_bytes()
         r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
-                      'build_sync() { return 42; }; main enable-sync --yes --dir "$1"', self.deploy)
+                      'build_gateway() { :; }; build_sync() { return 42; }; main enable-sync --yes --dir "$1"', self.deploy)
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual((self.deploy/'compose.yml').read_bytes(), original)
         self.assertFalse(any('stop' in call or 'up' in call for call in self.calls()))
@@ -157,15 +159,15 @@ class DeployTests(unittest.TestCase):
         self.create()
         original = {name:(self.deploy/name).read_bytes() for name in ['compose.yml','Caddyfile','app.env','deployment.conf','assppweb.sh']}
         r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
-                      'build_sync() { :; }; main enable-sync --yes --dir "$1"', self.deploy,
+                      'build_gateway() { :; }; build_sync() { :; }; main enable-sync --yes --dir "$1"', self.deploy,
                       env=dict(self.env, FAIL_ONCE_UP='1'))
         self.assertNotEqual(r.returncode, 0)
         for name, contents in original.items(): self.assertEqual((self.deploy/name).read_bytes(), contents)
 
     def test_sync_update_rebuilds_application_without_registry_pull(self):
-        self.create(SYNC_ENABLED='1', IMAGE='assppweb-sync:1.1.0')
+        self.create(SYNC_ENABLED='1', IMAGE='assppweb-sync:1.2.0')
         r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
-                      'build_sync() { printf "sync-build-done\\n"; }; main update --dir "$1"', self.deploy)
+                      'build_gateway() { :; }; build_sync() { printf "sync-build-done\\n"; }; main upgrade --dir "$1"', self.deploy)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn('sync-build-done', r.stdout)
         pulls = [call for call in self.calls() if 'pull' in call]
@@ -173,9 +175,9 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(pulls[0][-1], 'caddy')
 
     def test_sync_bundle_matches_embedded_checksum(self):
-        digest = hashlib.sha256((ROOT/'releases/account-sync-1.1.0.tar.gz').read_bytes()).hexdigest()
+        digest = hashlib.sha256((ROOT/'releases/account-sync-1.2.0.tar.gz').read_bytes()).hexdigest()
         self.assertIn('SYNC_BUNDLE_SHA256='+digest, SCRIPT.read_text())
-        with tarfile.open(ROOT/'releases/account-sync-1.1.0.tar.gz') as archive:
+        with tarfile.open(ROOT/'releases/account-sync-1.2.0.tar.gz') as archive:
             self.assertIn('Dockerfile', archive.getnames())
             self.assertIn('overlay/backend/src/routes/accounts.ts', archive.getnames())
             self.assertFalse(any(name.startswith('/') or '..' in Path(name).parts for name in archive.getnames()))
@@ -186,7 +188,7 @@ class DeployTests(unittest.TestCase):
                 if self.deploy.exists(): shutil.rmtree(self.deploy)
                 self.create(mode)
                 self.assertIn('127.0.0.1:18443:8080', (self.deploy/'compose.yml').read_text())
-                self.assertIn('basic_auth', (self.deploy/'Caddyfile').read_text())
+                self.assertIn('forward_auth', (self.deploy/'Caddyfile').read_text())
 
     def test_rejects_invalid_configuration(self):
         for option,value in [('--domain','evil.com { respond hacked }'),('--domain','1.2.3.4'),
@@ -266,16 +268,16 @@ class DeployTests(unittest.TestCase):
 
     def test_update_pull_failure_does_not_stop_services(self):
         self.create()
-        r=self.manage('update',FAIL_PULL='1')
+        r=self.manage('upgrade',FAIL_PULL='1')
         self.assertNotEqual(r.returncode,0)
         self.assertFalse(any('stop' in a for a in self.calls()))
 
     def test_failed_update_rolls_back_and_pin_survives_start(self):
         self.create()
-        r=self.manage('update',FAIL_NEW_UP='1')
+        r=self.manage('upgrade',FAIL_NEW_UP='1')
         self.assertNotEqual(r.returncode,0)
         self.assertTrue((self.deploy/'.active-override.yml').exists())
-        self.assertIn('已恢复旧镜像',r.stderr)
+        self.assertIn('已恢复旧配置',r.stderr)
         r=self.manage('start')
         self.assertEqual(r.returncode,0,r.stderr)
         self.assertIn(str(self.deploy/'.active-override.yml'),self.calls()[-1])
@@ -293,7 +295,7 @@ class DeployTests(unittest.TestCase):
         r=self.manage('config','--port','19001','--domain','new.example.com','--username','newadmin','--yes')
         self.assertEqual(r.returncode,0,r.stderr)
         self.assertIn('19001:443', (self.deploy/'compose.yml').read_text())
-        self.assertIn('newadmin '+TEST_HASH,(self.deploy/'Caddyfile').read_text())
+        self.assertIn('AUTH_USERNAME=newadmin',(self.deploy/'gateway.env').read_text())
         self.assertEqual((self.deploy/'access-password').read_text().strip(),PASSWORD)
 
     def test_invalid_configuration_never_replaces_live_files(self):
@@ -329,6 +331,7 @@ class DeployTests(unittest.TestCase):
             stdout,stderr=proc.communicate(timeout=5)
             self.assertEqual(proc.returncode,0,stderr.decode(errors='replace'))
             self.assertIn('修改用户名密码',stdout.decode())
+            self.assertIn('检查并更新管理器和应用',stdout.decode())
         finally:
             os.close(master); os.close(slave)
 
@@ -339,7 +342,8 @@ class DeployTests(unittest.TestCase):
         r=self.manage('passwd','--username','replacement','--password-file',password_file,'--yes',TEST_HASH=changed_hash)
         self.assertEqual(r.returncode,0,r.stderr)
         self.assertEqual((self.deploy/'access-password').read_text().strip(),'Another-valid-password!')
-        self.assertIn('replacement '+changed_hash,(self.deploy/'Caddyfile').read_text())
+        self.assertIn('AUTH_USERNAME=replacement',(self.deploy/'gateway.env').read_text())
+        self.assertEqual(changed_hash,(self.deploy/'auth.hash').read_text().strip())
 
     @unittest.skipUnless(shutil.which('openssl'),'openssl is needed for certificate import tests')
     def test_custom_origin_certificate_import(self):
@@ -352,6 +356,93 @@ class DeployTests(unittest.TestCase):
         self.assertIn('tls /etc/caddy/certs/origin.pem',(self.deploy/'Caddyfile').read_text())
         self.assertEqual((self.deploy/'certs/origin.key').stat().st_mode & 0o777,0o600)
 
+    def mock_release(self, version='1.2.1', corrupt=False, fail=False):
+        downloads=self.root/'downloads'; downloads.mkdir()
+        # A harmless future manager records handoff; it does not operate on this machine.
+        script='#!/usr/bin/env bash\nif [[ $1 == --version ]]; then printf "%s\\n" "'+version+'"; exit; fi\nprintf "%s\\n" "$@" > "$HANDOFF_LOG"\n'
+        digest=hashlib.sha256(script.encode()).hexdigest()
+        (downloads/'latest.txt').write_text(version+' '+('0'*64 if corrupt else digest)+'\n')
+        (downloads/('manager-'+version+'.sh')).write_text(script)
+        (self.bin/'curl').write_text('#!/usr/bin/env python3\nimport os,sys,shutil\nfrom pathlib import Path\na=sys.argv[1:]\n'
+            + ('sys.exit(22)\n' if fail else '')
+            + 'url=next(x for x in a if x.startswith("https://"))\nshutil.copyfile(Path(os.environ["DOWNLOADS"])/url.rsplit("/",1)[1], a[a.index("-o")+1])\n')
+        (self.bin/'curl').chmod(0o755)
+        return dict(DOWNLOADS=str(downloads), HANDOFF_LOG=str(self.root/'handoff'))
+
+    def test_self_update_hands_verified_manager_the_existing_directory(self):
+        self.create()
+        env=self.mock_release()
+        r=self.manage('update',**env)
+        self.assertEqual(r.returncode,0,r.stderr)
+        args=(self.root/'handoff').read_text().splitlines()
+        self.assertEqual(args,['upgrade','--dir',str(self.deploy),'--yes'])
+        self.assertFalse(any('stop' in call for call in self.calls()))
+
+    def test_bad_update_checksum_never_executes_or_replaces_the_manager(self):
+        self.create(); original=(self.deploy/'assppweb.sh').read_bytes()
+        r=self.manage('update',**self.mock_release(corrupt=True))
+        self.assertNotEqual(r.returncode,0)
+        self.assertFalse((self.root/'handoff').exists())
+        self.assertEqual((self.deploy/'assppweb.sh').read_bytes(),original)
+        self.assertFalse(any('stop' in call for call in self.calls()))
+
+    def test_failed_update_download_leaves_running_services_untouched(self):
+        self.create(); original=(self.deploy/'compose.yml').read_bytes()
+        r=self.manage('update',**self.mock_release(fail=True))
+        self.assertNotEqual(r.returncode,0)
+        self.assertEqual((self.deploy/'compose.yml').read_bytes(),original)
+        self.assertFalse(any('stop' in call or 'up' in call for call in self.calls()))
+
+    def test_self_update_rejects_downgrades(self):
+        self.create()
+        r=self.manage('update',**self.mock_release(version='1.1.9'))
+        self.assertNotEqual(r.returncode,0)
+        self.assertFalse((self.root/'handoff').exists())
+
+    def test_upgrade_failure_preserves_previous_manual_rollback_record(self):
+        self.create()
+        (self.deploy/'.rollback.yml').write_text('services: {asspp: {image: previous}}\n')
+        (self.deploy/'.rollback-config').write_text('previous-config-path\n')
+        r=self.manage('upgrade',FAIL_PULL='1')
+        self.assertNotEqual(r.returncode,0)
+        self.assertIn('previous',(self.deploy/'.rollback.yml').read_text())
+        self.assertEqual((self.deploy/'.rollback-config').read_text(),'previous-config-path\n')
+        self.assertFalse(list(self.deploy.glob('.snapshot.*')))
+
+    def test_upgrade_from_basic_auth_and_paired_configuration_rollback(self):
+        self.create()
+        # Real v1.1 file layout lacks a gateway environment file. Simulate its entry configuration.
+        (self.deploy/'gateway.env').unlink()
+        (self.deploy/'Caddyfile').write_text('http://:8080 {\n basic_auth {\n tester '+TEST_HASH+'\n }\n reverse_proxy asspp:8080\n}\n')
+        (self.deploy/'assppweb.sh').write_text('#!/bin/bash\n# old manager fixture\n')
+        (self.deploy/'.assppweb-managed').write_text('1.1.0\n')
+        (self.deploy/'data/account-vault').mkdir()
+        (self.deploy/'data/account-vault/accounts.enc').write_bytes(b'unchanged-encrypted-fixture')
+        previous=(self.deploy/'Caddyfile').read_bytes()
+        r=self.manage('upgrade')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertIn('forward_auth',(self.deploy/'Caddyfile').read_text())
+        self.assertTrue((self.deploy/'gateway.env').exists())
+        self.assertEqual((self.deploy/'access-password').read_text().strip(),PASSWORD)
+        self.assertEqual((self.deploy/'.assppweb-managed').read_text(),'1.2.0\n')
+        self.assertEqual((self.deploy/'assppweb.sh').read_bytes(),SCRIPT.read_bytes())
+        r=self.manage('rollback')
+        self.assertEqual(r.returncode,0,r.stderr)
+        self.assertEqual((self.deploy/'Caddyfile').read_bytes(),previous)
+        self.assertEqual((self.deploy/'.assppweb-managed').read_text(),'1.1.0\n')
+        self.assertFalse((self.deploy/'gateway.env').exists())
+        self.assertEqual((self.deploy/'data/account-vault/accounts.enc').read_bytes(),b'unchanged-encrypted-fixture')
+
+    def test_release_manager_and_gateway_integrity(self):
+        version, checksum=(ROOT/'releases/latest.txt').read_text().split()
+        self.assertEqual((ROOT/('releases/manager-'+version+'.sh')).read_bytes(), SCRIPT.read_bytes())
+        self.assertEqual(hashlib.sha256(SCRIPT.read_bytes()).hexdigest(),checksum)
+        bundle=ROOT/('releases/gateway-'+version+'.tar.gz')
+        self.assertIn('GATEWAY_BUNDLE_SHA256='+hashlib.sha256(bundle.read_bytes()).hexdigest(),SCRIPT.read_text())
+        with tarfile.open(bundle) as archive:
+            self.assertIn('server.mjs',archive.getnames())
+            self.assertFalse(any('node_modules/' in name or name.startswith('/') or '..' in Path(name).parts for name in archive.getnames()))
+
     @unittest.skipUnless(COMPOSE,'Set COMPOSE_BIN for real Compose schema validation')
     def test_real_compose_schema_for_all_modes(self):
         for mode in ('origin','proxy','local'):
@@ -362,7 +453,24 @@ class DeployTests(unittest.TestCase):
                 self.assertEqual(result.returncode,0,result.stderr)
                 parsed=json.loads(result.stdout)
                 self.assertNotIn('ports',parsed['services']['asspp'])
+                self.assertNotIn('ports',parsed['services']['gateway'])
                 self.assertEqual(parsed['services']['caddy']['ports'][0]['published'],'18443')
+
+    def start_gateway(self):
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1',0)); port=sock.getsockname()[1]
+        token = next(line.split('=',1)[1] for line in (self.deploy/'app.env').read_text().splitlines() if line.startswith('ACCOUNT_PROXY_TOKEN='))
+        env = dict(os.environ, PORT=str(port), PUBLIC_URL='https://apps.example.com', AUTH_USERNAME='tester',
+                   AUTH_HASH_FILE=str(self.deploy/'auth.hash'), SESSION_DIR=str(self.deploy/'sessions'), ACCOUNT_PROXY_TOKEN=token)
+        proc=subprocess.Popen([os.environ.get('NODE_BIN','node'),str(ROOT/'gateway/server.mjs')], env=env,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        def cleanup(): proc.terminate(); proc.wait(timeout=10)
+        self.addCleanup(cleanup)
+        for _ in range(100):
+            try:
+                with socket.create_connection(('127.0.0.1',port),timeout=.1): return port
+            except OSError: time.sleep(.05)
+        self.fail('Session gateway did not start')
 
     @unittest.skipUnless(CADDY,'Set CADDY_BIN for real authentication/proxy tests')
     def test_real_gateway_authentication_and_install_exemptions(self):
@@ -374,7 +482,7 @@ class DeployTests(unittest.TestCase):
                     self.send_response(101); self.send_header('Upgrade','websocket'); self.send_header('Connection','Upgrade'); self.send_header('Sec-WebSocket-Accept',accept); self.end_headers()
                     return
                 body=json.dumps({'authorization':self.headers.get('Authorization'),'proto':self.headers.get('X-Forwarded-Proto'),
-                                 'accountProxy':self.headers.get('X-Asspp-Account-Proxy')}).encode()
+                                 'cookie':self.headers.get('Cookie'), 'accountProxy':self.headers.get('X-Asspp-Account-Proxy')}).encode()
                 self.send_response(200); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
             def log_message(self,*args): pass
         backend=ThreadingHTTPServer(('127.0.0.1',0),Backend)
@@ -384,7 +492,8 @@ class DeployTests(unittest.TestCase):
             with socket.socket() as sock: sock.bind(('127.0.0.1',0)); return sock.getsockname()[1]
         port,health=free_port(),free_port()
         self.create('proxy')
-        config=(self.deploy/'Caddyfile').read_text().replace('http://:8080',f'http://127.0.0.1:{port}').replace('127.0.0.1:2018',f'127.0.0.1:{health}').replace('asspp:8080',f'127.0.0.1:{backend.server_port}')
+        gateway_port=self.start_gateway()
+        config=(self.deploy/'Caddyfile').read_text().replace('http://:8080',f'http://127.0.0.1:{port}').replace('127.0.0.1:2018',f'127.0.0.1:{health}').replace('asspp:8080',f'127.0.0.1:{backend.server_port}').replace('gateway:3000',f'127.0.0.1:{gateway_port}')
         (self.deploy/'Caddyfile').write_text(config)
         proc=subprocess.Popen([CADDY,'run','--config',str(self.deploy/'Caddyfile')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=dict(os.environ,XDG_DATA_HOME=str(self.root/'xdg-data'),XDG_CONFIG_HOME=str(self.root/'xdg-config')))
         def cleanup(): proc.terminate(); proc.wait(timeout=10)
@@ -393,18 +502,31 @@ class DeployTests(unittest.TestCase):
             try:
                 with socket.create_connection(('127.0.0.1',port),timeout=.1): break
             except OSError: time.sleep(.05)
-        def request(path,auth=False,websocket=False):
+        conn=http.client.HTTPConnection('127.0.0.1',port,timeout=5)
+        conn.request('POST','/_auth/login', body=json.dumps({'username':'tester','password':PASSWORD,'remember':True}),
+                     headers={'Origin':'https://apps.example.com','Content-Type':'application/json','X-Asspp-Request':'session-v1'})
+        login=conn.getresponse()
+        self.assertEqual(login.status,200,login.read())
+        cookie=login.getheader('Set-Cookie').split(';')[0]
+        conn.close()
+        def request(path,auth=False,websocket=False,extra=None):
             conn=http.client.HTTPConnection('127.0.0.1',port,timeout=5)
-            headers={'X-Asspp-Account-Proxy':'spoofed-client-value'}
-            if auth: headers['Authorization']='Basic '+base64.b64encode(('tester:'+PASSWORD).encode()).decode()
-            if websocket: headers.update(Upgrade='websocket',Connection='Upgrade',**{'Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==','Sec-WebSocket-Version':'13'})
+            headers={'X-Asspp-Account-Proxy':'spoofed-client-value','X-Asspp-Gateway-Secret':'spoofed',
+                     'Authorization':'Basic '+base64.b64encode(('tester:'+PASSWORD).encode()).decode()}
+            if auth: headers['Cookie']=cookie
+            if websocket: headers.update(Upgrade='websocket',Connection='Upgrade',Origin='https://apps.example.com',**{'Sec-WebSocket-Key':'dGhlIHNhbXBsZSBub25jZQ==','Sec-WebSocket-Version':'13'})
+            headers.update(extra or {})
             conn.request('GET',path,headers=headers); response=conn.getresponse()
             status=response.status; body=response.read() if status!=101 else b''; conn.close()
             return status,body
         for path in ('/','/api/settings','/api/accounts','/wisp/','/api/install/not-a-uuid/payload.ipa'):
-            self.assertEqual(request(path)[0],401,path)
+            self.assertEqual(request(path,extra={'Origin':'https://apps.example.com'})[0],401,path)
         status,body=request('/api/settings',True)
         self.assertEqual(status,200); self.assertIsNone(json.loads(body)['authorization'])
+        self.assertIsNone(json.loads(body)['cookie'])
+        self.assertEqual(request('/',extra={'Accept':'text/html'})[0],302)
+        self.assertEqual(request('/_auth/login')[0],200)
+        self.assertEqual(request('/wisp/',True,True,{'Origin':'https://evil.example'})[0],403)
         self.assertEqual(json.loads(body)['proto'],'https')
         token = next(line.split('=',1)[1] for line in (self.deploy/'app.env').read_text().splitlines() if line.startswith('ACCOUNT_PROXY_TOKEN='))
         self.assertEqual(json.loads(request('/api/accounts',True)[1])['accountProxy'], token)
@@ -427,7 +549,8 @@ class DeployTests(unittest.TestCase):
             with socket.socket() as sock: sock.bind(('127.0.0.1',0)); return sock.getsockname()[1]
         port,health=free_port(),free_port()
         self.create('origin')
-        config=(self.deploy/'Caddyfile').read_text().replace('https://apps.example.com',f'https://apps.example.com:{port}').replace('127.0.0.1:2018',f'127.0.0.1:{health}').replace('asspp:8080',f'127.0.0.1:{backend.server_port}')
+        gateway_port=self.start_gateway()
+        config=(self.deploy/'Caddyfile').read_text().replace('https://apps.example.com',f'https://apps.example.com:{port}').replace('127.0.0.1:2018',f'127.0.0.1:{health}').replace('asspp:8080',f'127.0.0.1:{backend.server_port}').replace('gateway:3000',f'127.0.0.1:{gateway_port}')
         (self.deploy/'Caddyfile').write_text(config)
         proc=subprocess.Popen([CADDY,'run','--config',str(self.deploy/'Caddyfile')],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=dict(os.environ,XDG_DATA_HOME=str(self.root/'xdg-data'),XDG_CONFIG_HOME=str(self.root/'xdg-config')))
         def cleanup(): proc.terminate(); proc.wait(timeout=10)
@@ -444,7 +567,7 @@ class DeployTests(unittest.TestCase):
                 with socket.create_connection(('127.0.0.1',port),timeout=5) as sock:
                     with context.wrap_socket(sock,server_hostname='apps.example.com') as tls:
                         self.assertTrue(tls.getpeercert(binary_form=True))
-                        tls.sendall(('GET / HTTP/1.1\r\nHost: apps.example.com\r\nAuthorization: Basic '+authorization+'\r\nConnection: close\r\n\r\n').encode())
+                        tls.sendall(b'GET /_auth/login HTTP/1.1\r\nHost: apps.example.com\r\nConnection: close\r\n\r\n')
                         self.assertIn(b'200 OK',tls.recv(4096))
                 break
             except ssl.SSLError:
