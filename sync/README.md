@@ -1,6 +1,6 @@
 # 服务端 Apple ID 同步版
 
-此扩展基于 Lakr233/AssppWeb 的 `485be0b884e5d88bbd5379179064999992273614` 构建。它改变上游的浏览器本地账号存储设计：Apple ID、密码、会话令牌、Cookie 和设备标识会经 HTTPS 保存到服务器，供同一实例的已认证设备使用。Apple 通信仍通过浏览器 TLS/Wisp 完成。
+此扩展基于 Lakr233/AssppWeb 的 `485be0b884e5d88bbd5379179064999992273614` 构建。v1.2.1 另外覆盖经过回归测试的依赖锁文件，以包含安全修复。它改变上游的浏览器本地账号存储设计：Apple ID、密码、会话令牌、Cookie 和设备标识会经 HTTPS 保存到服务器，供同一实例的已认证设备使用。Apple 通信仍通过浏览器 TLS/Wisp 完成。
 
 ## 升级已有安装
 
@@ -36,7 +36,7 @@ v1.2 起，后续在 `assppweb` 菜单选择 6，会更新管理脚本、Cookie 
 `Dockerfile` 下载上述固定上游提交，检查 SHA-256，然后覆盖 `overlay/` 并运行 `patch-upstream.mjs` 接入路由和界面。若上游接入点发生变化，构建直接失败，避免生成半接入版本。保留上游许可证 `LICENSE.upstream`。浏览器自动翻译已禁用，请使用应用内的语言设置。
 
 ```bash
-docker build -t assppweb-sync:1.2.0 sync/
+docker build -t assppweb-sync:1.2.1 sync/
 ```
 
 测试来源：`sync/tests/backend/accounts.test.ts` 放入上游 `backend/tests/sync/accounts.test.ts`；`sync/tests/frontend/accounts.test.ts` 替换上游 `frontend/tests/store/accounts.test.ts`。按上游 `npm ci` 后运行各自的 `npm test`。部署管理器测试位于 `tests/test_deploy.py`。

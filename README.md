@@ -4,6 +4,10 @@
 
 支持安装时自定义 **Web 用户名、密码、回源端口**；部署后输入 **`assppweb`** 进入中文管理菜单。默认适配 **Cloudflare Origin Rules**，公网访问地址不需要带回源端口。
 
+## v1.2.1 依赖修复
+
+同步版更新 React Router、Express 及相关传递依赖的锁文件，修复依赖审计报告中的已知问题；adm-zip 固定为 0.6.1。未修改 Apple 登录协议。2026-10-22 复核时，前后端生产依赖的 `npm audit --omit=dev` 均为 0 项已知公告；这不是对软件不存在漏洞的保证。更新后的前后端 223 项测试及构建通过。
+
 ## 网页登录与菜单更新（v1.2）
 
 网站入口改为独立的中文登录页面，电脑、手机均可使用；沿用原用户名和密码。登录后 Cookie 只保存随机会话凭证，不保存用户名、密码或 Apple ID。支持保持登录、退出当前设备、退出所有设备，以及修改用户名/密码后撤销旧会话。
@@ -259,7 +263,7 @@ COMPOSE_BIN=/absolute/path/to/docker-compose \
 python3 tests/test_deploy.py
 ```
 
-测试覆盖参数和权限、配置生成、真实 Compose 配置解析、真实 Caddy + Node Cookie 登录认证、源站 TLS 握手、安装资源例外、WebSocket 升级、CSRF、会话撤销/过期、备份失败恢复、配置失败恢复、管理器校验升级和成套回滚。Docker 生命周期使用模拟命令验证；当前发布未在远程 Linux VPS 上实际安装 Docker，也未实测 Apple ID 登录和 iOS 安装。
+测试覆盖参数和权限、配置生成、真实 Compose 配置解析、真实 Caddy + Node Cookie 登录认证、源站 TLS 握手、安装资源例外、WebSocket 升级、CSRF、会话撤销/过期、备份失败恢复、配置失败恢复、管理器校验升级和成套回滚。Docker 生命周期使用模拟命令验证；已在 Debian Linux 的 Docker 部署验证容器启动、源站 HTTPS 和 Cloudflare 公网登录入口；未使用真实 Apple ID 执行登录或 iOS 安装测试。
 
 ## 上游与许可
 

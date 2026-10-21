@@ -137,7 +137,7 @@ class DeployTests(unittest.TestCase):
         self.assertIn('9010:443', (self.deploy/'compose.yml').read_text())
         self.assertIn('AUTH_USERNAME=originaladmin', (self.deploy/'gateway.env').read_text())
         self.assertEqual((self.deploy/'access-password').read_text().strip(), PASSWORD)
-        self.assertIn('image: assppweb-sync:1.2.0', (self.deploy/'compose.yml').read_text())
+        self.assertIn('image: assppweb-sync:1.2.1', (self.deploy/'compose.yml').read_text())
         self.assertIn('SYNC_ENABLED=1', (self.deploy/'deployment.conf').read_text())
         self.assertFalse((self.deploy/'.active-override.yml').exists())
         self.assertTrue(list((self.deploy/'backups').glob('assppweb-*.tar.gz')))
@@ -165,7 +165,7 @@ class DeployTests(unittest.TestCase):
         for name, contents in original.items(): self.assertEqual((self.deploy/name).read_bytes(), contents)
 
     def test_sync_update_rebuilds_application_without_registry_pull(self):
-        self.create(SYNC_ENABLED='1', IMAGE='assppweb-sync:1.2.0')
+        self.create(SYNC_ENABLED='1', IMAGE='assppweb-sync:1.2.1')
         r = self.bash('require_linux_root() { :; }; lock_operation() { :; }; '
                       'build_gateway() { :; }; build_sync() { printf "sync-build-done\\n"; }; main upgrade --dir "$1"', self.deploy)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -175,9 +175,9 @@ class DeployTests(unittest.TestCase):
         self.assertEqual(pulls[0][-1], 'caddy')
 
     def test_sync_bundle_matches_embedded_checksum(self):
-        digest = hashlib.sha256((ROOT/'releases/account-sync-1.2.0.tar.gz').read_bytes()).hexdigest()
+        digest = hashlib.sha256((ROOT/'releases/account-sync-1.2.1.tar.gz').read_bytes()).hexdigest()
         self.assertIn('SYNC_BUNDLE_SHA256='+digest, SCRIPT.read_text())
-        with tarfile.open(ROOT/'releases/account-sync-1.2.0.tar.gz') as archive:
+        with tarfile.open(ROOT/'releases/account-sync-1.2.1.tar.gz') as archive:
             self.assertIn('Dockerfile', archive.getnames())
             self.assertIn('overlay/backend/src/routes/accounts.ts', archive.getnames())
             self.assertFalse(any(name.startswith('/') or '..' in Path(name).parts for name in archive.getnames()))
@@ -356,7 +356,7 @@ class DeployTests(unittest.TestCase):
         self.assertIn('tls /etc/caddy/certs/origin.pem',(self.deploy/'Caddyfile').read_text())
         self.assertEqual((self.deploy/'certs/origin.key').stat().st_mode & 0o777,0o600)
 
-    def mock_release(self, version='1.2.1', corrupt=False, fail=False):
+    def mock_release(self, version='1.2.2', corrupt=False, fail=False):
         downloads=self.root/'downloads'; downloads.mkdir()
         # A harmless future manager records handoff; it does not operate on this machine.
         script='#!/usr/bin/env bash\nif [[ $1 == --version ]]; then printf "%s\\n" "'+version+'"; exit; fi\nprintf "%s\\n" "$@" > "$HANDOFF_LOG"\n'
@@ -424,7 +424,7 @@ class DeployTests(unittest.TestCase):
         self.assertIn('forward_auth',(self.deploy/'Caddyfile').read_text())
         self.assertTrue((self.deploy/'gateway.env').exists())
         self.assertEqual((self.deploy/'access-password').read_text().strip(),PASSWORD)
-        self.assertEqual((self.deploy/'.assppweb-managed').read_text(),'1.2.0\n')
+        self.assertEqual((self.deploy/'.assppweb-managed').read_text(),'1.2.1\n')
         self.assertEqual((self.deploy/'assppweb.sh').read_bytes(),SCRIPT.read_bytes())
         r=self.manage('rollback')
         self.assertEqual(r.returncode,0,r.stderr)

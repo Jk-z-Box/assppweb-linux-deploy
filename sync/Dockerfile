@@ -25,6 +25,6 @@ COPY --from=backend-build /src/backend/package.json ./
 COPY --from=frontend-build /src/frontend/dist ./public
 COPY --from=source /src/LICENSE ./LICENSE.upstream
 RUN mkdir -p /data/packages
-ENV DATA_DIR=/data PORT=8080 BUILD_COMMIT=485be0b-sync-1.2.0
+ENV DATA_DIR=/data PORT=8080 BUILD_COMMIT=485be0b-sync-1.2.1
 EXPOSE 8080
 CMD ["node", "dist/index.js"]
