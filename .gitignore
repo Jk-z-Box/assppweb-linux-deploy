@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.enc
+*.tar.gz
+.env
+app.env
+access-password
+auth.hash
+certs/
+deployment.conf
+data/
+caddy/
+backups/
+.operation.lock
+.rollback.yml
+.active-override.yml
