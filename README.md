@@ -1,6 +1,6 @@
 # AssppWeb Linux 一键部署
 
-为 [Lakr233/AssppWeb](https://github.com/Lakr233/AssppWeb) 提供独立的 Linux 部署与管理脚本。使用上游发布的 `ghcr.io/lakr233/assppweb:latest` 镜像，不修改 Apple 登录、许可证或 IPA 处理逻辑。
+为 [Lakr233/AssppWeb](https://github.com/Lakr233/AssppWeb) 提供独立的 Linux 部署与管理脚本。默认构建固定版本的同步版镜像，包含服务端账号库、网页登录，以及下述下载兼容补丁；未启用同步版时可使用上游镜像。
 
 支持安装时自定义 **Web 用户名、密码、回源端口**；部署后输入 **`assppweb`** 进入中文管理菜单。默认适配 **Cloudflare Origin Rules**，公网访问地址不需要带回源端口。
 
@@ -275,7 +275,11 @@ COMPOSE_BIN=/absolute/path/to/docker-compose \
 python3 tests/test_deploy.py
 ```
 
-测试覆盖参数和权限、配置生成、真实 Compose 配置解析、真实 Caddy + Node Cookie 登录认证、源站 TLS 握手、安装资源例外、WebSocket 升级、CSRF、会话撤销/过期、备份失败恢复、配置失败恢复、管理器校验升级和成套回滚。Docker 生命周期使用模拟命令验证；已在 Debian Linux 的 Docker 部署验证容器启动、源站 HTTPS 和 Cloudflare 公网登录入口；未使用真实 Apple ID 执行登录或 iOS 安装测试。
+测试覆盖参数和权限、配置生成、真实 Compose 配置解析、真实 Caddy + Node Cookie 登录认证、源站 TLS 握手、安装资源例外、WebSocket 升级、CSRF、会话撤销/过期、备份失败恢复、配置失败恢复、管理器校验升级和成套回滚。Docker 生命周期使用模拟命令验证；已在 Debian Linux 的 Docker 部署验证容器启动、源站 HTTPS 和 Cloudflare 公网登录入口；网页入口与 Apple 账号流程的验证范围见下方记录；尚未在真实 iOS 设备安装运行生成的 IPA。
+
+v1.3.0 本地验证：前端 194 项、后端 57 项、部署管理 39 项、认证网关 17 项测试通过（共 307 项）；前后端构建、ShellCheck 通过，前端、后端和网关生产依赖审计均为 0 项已知公告。
+
+2026-10-24，在已升级的 Linux 服务器上，通过真实网页和既有账号实测 Shadowrocket 2.2.92（美国）、Google 443.5（美国）、Trading 212 8.53.0（英国）、夸克网盘 10.19.5（香港），四项均完成下载。本次未要求输入验证码。网页显示的商店版本可能滞后，下载任务以 Apple 返回的实际版本为准；这不代表后续 Apple 会话永不过期。
 
 ## 上游与许可
 
