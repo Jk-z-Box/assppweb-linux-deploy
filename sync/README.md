@@ -36,7 +36,7 @@ v1.2 起，后续在 `assppweb` 菜单选择 6，会更新管理脚本、Cookie 
 `Dockerfile` 下载上述固定上游提交，检查 SHA-256，然后覆盖 `overlay/` 并运行 `patch-upstream.mjs` 接入路由和界面。若上游接入点发生变化，构建直接失败，避免生成半接入版本。保留上游许可证 `LICENSE.upstream`。浏览器自动翻译已禁用，请使用应用内的语言设置。
 
 ```bash
-docker build -t assppweb-sync:1.3.0 sync/
+docker build -t assppweb-sync:1.3.1 sync/
 ```
 
 测试来源：`sync/tests/backend/accounts.test.ts` 放入上游 `backend/tests/sync/accounts.test.ts`；`sync/tests/frontend/accounts.test.ts` 替换上游 `frontend/tests/store/accounts.test.ts`。按上游 `npm ci` 后运行各自的 `npm test`。部署管理器测试位于 `tests/test_deploy.py`。
@@ -44,3 +44,9 @@ docker build -t assppweb-sync:1.3.0 sync/
 发行包由 `tools/package_sync.py` 确定性生成，脚本内嵌构建包摘要。每次修改 sync 构建源码后必须重新打包并更新摘要。
 
 下载扩展：ent/download + kbsync、无 SINF 响应兼容、按需认证与当前页验证码、明确免费授权自动获取。kbsync 缓存在浏览器，首次准备需要等待；所有 Apple ID 会话继续在服务端同步。下载时的账号更新保留版本校验，其他设备并发修改会明确报冲突，不覆盖。
+
+## 家庭共享检测（v1.3.1）
+
+账号详情提供按需向 Apple 查询家庭成员与购买共享开关的入口。结果只保留在当前页面，不写入账号库，也不作为任何 App 的下载许可。代理只新增 `play.itunes.apple.com:443`。查询失败与共享关闭分开显示，账号切换或重新认证时清除旧结果。
+
+本轮已验证家庭信息查询，**未打通家庭成员直接下载**。成员对付费 App 收到 9610 时不再被提示必须再次购买。可使用原购买账号下载，或在官方 App Store 获取家庭共享项目。协议验证细节见 [家庭共享验证记录](../docs/FAMILY_SHARING.md)。

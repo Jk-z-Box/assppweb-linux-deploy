@@ -111,3 +111,89 @@ for (const file of fs.readdirSync(path.join(root, 'frontend/src/locales'))) {
   data.downloadRecovery = file === 'zh-TW.json' ? recoveryStrings.tw : file === 'zh-CN.json' ? recoveryStrings.cn : recoveryStrings.en;
   fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n');
 }
+
+// Family membership is informational; it must never be treated as an app license.
+replace('frontend/src/components/Account/AccountDetail.tsx',
+  "import Spinner from '../common/Spinner';",
+  "import Spinner from '../common/Spinner';\nimport FamilySharing from './FamilySharing';");
+replace('frontend/src/components/Account/AccountDetail.tsx',
+  '        {needsCode && (',
+  '        <FamilySharing key={account.email} account={account} />\n\n        {needsCode && (');
+replace('backend/src/services/wsProxy.ts',
+  '  /^uclient-api\\.itunes\\.apple\\.com$/,',
+  '  /^uclient-api\\.itunes\\.apple\\.com$/,\n  /^play\\.itunes\\.apple\\.com$/,');
+
+const familyStrings = {
+  "en": {
+    "title": "Family Sharing",
+    "description": "Check family membership and purchase-sharing settings directly with Apple.",
+    "check": "Check Family Sharing",
+    "checking": "Checking…",
+    "refresh": "Refresh",
+    "verified": "Family information confirmed by Apple · {{time}}",
+    "empty": "Apple returned no family members.",
+    "member": "Family member",
+    "current": "Current account",
+    "inactive": "Membership is not active",
+    "sharingOn": "Purchase sharing is on",
+    "sharingOff": "Purchase sharing is off",
+    "downloadLimit": "Membership does not confirm that a particular app is shared. This service cannot currently complete downloads using a family member’s license. Use the purchaser account here, or download shared purchases in the official App Store.",
+    "help": "Apple’s shared-purchase download instructions",
+    "invalidResponse": "Apple returned incomplete or inconsistent family information. Please retry later.",
+    "lookupFailed": "Apple could not confirm family information (code {{code}}). This does not mean purchase sharing is off.",
+    "httpError": "Family lookup failed (HTTP {{status}}). Please retry later.",
+    "unavailable": "Unable to check Family Sharing. Please retry later.",
+    "licenseRequired": "Apple did not grant this account a download license (9610). Family membership is different from a personal purchase. Check Family Sharing in account details; member-license downloads are not yet supported here."
+  },
+  "cn": {
+    "title": "家庭共享",
+    "description": "向 Apple 查询此账号的家庭成员与购买项目共享状态。",
+    "check": "检查家庭共享",
+    "checking": "正在检查…",
+    "refresh": "刷新家庭信息",
+    "verified": "家庭信息已由 Apple 确认 · {{time}}",
+    "empty": "Apple 未返回家庭成员。",
+    "member": "家庭成员",
+    "current": "当前账号",
+    "inactive": "家庭成员关系尚未生效",
+    "sharingOn": "已开启购买项目共享",
+    "sharingOff": "未开启购买项目共享",
+    "downloadLimit": "家庭关系不代表某个 App 已获共享授权。本服务目前尚不能使用成员的家庭授权下载；可在这里选择原购买账号下载，或在官方 App Store 的家庭购买项目中下载。",
+    "help": "查看 Apple 家庭购买项目下载步骤",
+    "invalidResponse": "Apple 返回的家庭信息不完整或与当前账号不一致，请稍后重试。",
+    "lookupFailed": "Apple 暂未确认家庭信息（代码 {{code}}），这不代表购买项目共享已关闭。",
+    "httpError": "家庭信息查询失败（HTTP {{status}}），请稍后重试。",
+    "unavailable": "暂时无法检查家庭共享，请稍后重试。",
+    "licenseRequired": "Apple 未授予当前账号此 App 的下载许可（9610）。家庭成员资格不同于本人购买记录，可到账号详情检查家庭共享；本服务尚不支持成员授权下载。"
+  },
+  "tw": {
+    "title": "家人共享",
+    "description": "向 Apple 查詢此帳號的家庭成員與購買項目共享狀態。",
+    "check": "檢查家人共享",
+    "checking": "正在檢查…",
+    "refresh": "重新整理家庭資訊",
+    "verified": "家庭資訊已由 Apple 確認 · {{time}}",
+    "empty": "Apple 未傳回家庭成員。",
+    "member": "家庭成員",
+    "current": "目前帳號",
+    "inactive": "家庭成員關係尚未生效",
+    "sharingOn": "已開啟購買項目共享",
+    "sharingOff": "未開啟購買項目共享",
+    "downloadLimit": "家庭關係不代表某個 App 已獲共享授權。本服務目前尚不能使用成員的家庭授權下載；可在這裡選擇原購買帳號下載，或在官方 App Store 的家庭購買項目中下載。",
+    "help": "查看 Apple 家庭購買項目下載步驟",
+    "invalidResponse": "Apple 傳回的家庭資訊不完整或與目前帳號不一致，請稍後重試。",
+    "lookupFailed": "Apple 暫未確認家庭資訊（代碼 {{code}}），這不代表購買項目共享已關閉。",
+    "httpError": "家庭資訊查詢失敗（HTTP {{status}}），請稍後重試。",
+    "unavailable": "暫時無法檢查家人共享，請稍後重試。",
+    "licenseRequired": "Apple 未授予目前帳號此 App 的下載許可（9610）。家庭成員資格不同於本人購買紀錄，可到帳號詳情檢查家人共享；本服務尚不支援成員授權下載。"
+  }
+};
+for (const file of fs.readdirSync(path.join(root, 'frontend/src/locales'))) {
+  if (!file.endsWith('.json')) continue;
+  const target = path.join(root, 'frontend/src/locales', file);
+  const data = JSON.parse(fs.readFileSync(target, 'utf8'));
+  const strings = file === 'zh-TW.json' ? familyStrings.tw : file === 'zh-CN.json' ? familyStrings.cn : familyStrings.en;
+  data.family = strings;
+  data.errors.download.licenseRequired = strings.licenseRequired;
+  fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n');
+}

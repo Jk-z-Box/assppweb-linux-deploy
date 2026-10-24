@@ -32,6 +32,6 @@ COPY --from=frontend-build /src/frontend/dist ./public
 COPY --from=source /src/LICENSE ./LICENSE.upstream
 COPY --from=sap-assets /out /opt/asspp/sap-assets
 RUN mkdir -p /data/packages
-ENV DATA_DIR=/data PORT=8080 BUILD_COMMIT=67338e3-sync-1.3.0
+ENV DATA_DIR=/data PORT=8080 BUILD_COMMIT=67338e3-sync-1.3.1
 EXPOSE 8080
 CMD ["node", "dist/index.js"]

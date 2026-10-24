@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-VERSION=1.3.0
+VERSION=1.3.1
 COMMAND=install
 INSTALL_DIR=/opt/assppweb
 DOMAIN=
@@ -18,9 +18,9 @@ ACCESS_PASSWORD=
 IMAGE=ghcr.io/lakr233/assppweb:latest
 SYNC_ENABLED=0
 ACCOUNT_PROXY_TOKEN=
-SYNC_IMAGE=assppweb-sync:1.3.0
-SYNC_BUNDLE_SHA256=69deb45e29dfad7f81f56f217431f3591c044a99463ae1c2e00381ba8be3bbe2
-GATEWAY_IMAGE=assppweb-gateway:1.3.0
+SYNC_IMAGE=assppweb-sync:1.3.1
+SYNC_BUNDLE_SHA256=11e63e32fd5ff5faf949d4a1bd20273dc53f2944c99e2dbe73991fb2b9592c6b
+GATEWAY_IMAGE=assppweb-gateway:1.3.1
 GATEWAY_BUNDLE_SHA256=5fa95b8e25f29fb0162650e17d9d9a5f615c0497c20c1679b6a444c0f0a8e790
 LAST_CONFIG_BACKUP=
 SNAPSHOT_PREVIOUS=
@@ -579,7 +579,7 @@ build_sync() {
   STAGE_DIR=$(mktemp -d)
   log '下载并校验账号同步构建包；首次构建可能需要几分钟'
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/account-sync-1.3.0.tar.gz' \
+    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/account-sync-1.3.1.tar.gz' \
     -o "$STAGE_DIR/bundle.tar.gz"
   printf '%s  %s\n' "$SYNC_BUNDLE_SHA256" "$STAGE_DIR/bundle.tar.gz" | sha256sum -c - >/dev/null || die '构建包校验失败，现有服务未变更'
   mkdir "$STAGE_DIR/source"
@@ -595,7 +595,7 @@ build_gateway() {
   STAGE_DIR=$(mktemp -d)
   log '下载并校验 Cookie 登录入口构建包'
   curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
-    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/gateway-1.3.0.tar.gz' \
+    'https://raw.githubusercontent.com/Jk-z-Box/assppweb-linux-deploy/main/releases/gateway-1.3.1.tar.gz' \
     -o "$STAGE_DIR/bundle.tar.gz"
   printf '%s  %s\n' "$GATEWAY_BUNDLE_SHA256" "$STAGE_DIR/bundle.tar.gz" | sha256sum -c - >/dev/null || die '登录入口构建包校验失败'
   mkdir "$STAGE_DIR/source"
