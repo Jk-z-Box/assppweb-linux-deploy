@@ -18,7 +18,8 @@
     "express": "^4.21.2",
     "plist": "^3.1.0",
     "uuid": "^11.0.5",
-    "yauzl-promise": "^4.0.0"
+    "yauzl-promise": "^4.0.0",
+    "unbzip2-stream": "^1.4.3"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -37,6 +38,7 @@
     "supertest": "^7.2.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "@types/unbzip2-stream": "^1.4.3"
   }
 }

@@ -25,18 +25,13 @@ replace(
 replace(
   'frontend/src/App.tsx',
   "import GlobalDownloadNotifier from './components/common/GlobalDownloadNotifier';",
-  "import GlobalDownloadNotifier from './components/common/GlobalDownloadNotifier';\nimport AccountSync from './components/Account/AccountSync';",
+  "import GlobalDownloadNotifier from './components/common/GlobalDownloadNotifier';\nimport AccountSync from './components/Account/AccountSync';\nimport AppleVerification from './components/Account/AppleVerification';",
 );
-replace('frontend/src/App.tsx', '<GlobalDownloadNotifier />', '<GlobalDownloadNotifier />\n        <AccountSync />');
+replace('frontend/src/App.tsx', '<GlobalDownloadNotifier />', '<GlobalDownloadNotifier />\n        <AccountSync />\n        <AppleVerification />');
 replace(
   'frontend/src/components/Account/AccountDetail.tsx',
   'await updateAccount(updated);',
   'await updateAccount({ ...account, ...updated });',
-);
-replace(
-  'frontend/src/hooks/useDownloadAction.ts',
-  'await updateAccount(renewed);\n      currentAccount = renewed;',
-  'currentAccount = { ...account, ...renewed };\n      await updateAccount(currentAccount);',
 );
 replace(
   'frontend/src/components/Settings/SettingsPage.tsx',
@@ -87,3 +82,32 @@ replace(
   "    <PageContainer title={t('settings.title')}>",
   '    <PageContainer title={t(\'settings.title\')}>\n      <a href="/_auth/login" translate="no" className="mb-6 inline-block rounded-lg border border-gray-300 px-4 py-2 text-sm text-blue-600 dark:border-gray-700 dark:text-blue-400">\u7f51\u7ad9\u767b\u5f55 / \u9000\u51fa</a>',
 );
+
+const recoveryStrings = {
+  en: {
+    preparing: 'Preparing download. First use may take about a minute; keep this page open.',
+    acquiring: 'Getting the free app license…', renewing: 'Refreshing Apple sign-in…',
+    verifyTitle: 'Verify Apple Account', verifyHelp: 'Enter the code from your trusted device. Your download will continue after verification.',
+    continue: 'Verify and continue', cancelled: 'Verification cancelled or timed out. You can retry the download.',
+    codeRequired: 'Enter the six-digit verification code.'
+  },
+  cn: {
+    preparing: '正在准备下载，首次使用可能需要约一分钟，请保持页面打开。',
+    acquiring: '正在获取免费应用授权…', renewing: '正在更新 Apple 登录状态…',
+    verifyTitle: '验证 Apple 账号', verifyHelp: '请输入受信任设备收到的验证码，验证成功后将继续下载。',
+    continue: '验证并继续', cancelled: '验证已取消或超时，可以重新尝试下载。', codeRequired: '请输入六位验证码。'
+  },
+  tw: {
+    preparing: '正在準備下載，首次使用可能需要約一分鐘，請保持頁面開啟。',
+    acquiring: '正在取得免費 App 授權…', renewing: '正在更新 Apple 登入狀態…',
+    verifyTitle: '驗證 Apple 帳號', verifyHelp: '請輸入受信任裝置收到的驗證碼，驗證成功後將繼續下載。',
+    continue: '驗證並繼續', cancelled: '驗證已取消或逾時，可以重新嘗試下載。', codeRequired: '請輸入六位驗證碼。'
+  }
+};
+for (const file of fs.readdirSync(path.join(root, 'frontend/src/locales'))) {
+  if (!file.endsWith('.json')) continue;
+  const target = path.join(root, 'frontend/src/locales', file);
+  const data = JSON.parse(fs.readFileSync(target, 'utf8'));
+  data.downloadRecovery = file === 'zh-TW.json' ? recoveryStrings.tw : file === 'zh-CN.json' ? recoveryStrings.cn : recoveryStrings.en;
+  fs.writeFileSync(target, JSON.stringify(data, null, 2) + '\n');
+}
